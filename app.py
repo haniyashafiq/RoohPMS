@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, jsonify, send_file, session, redirect, url_for
-from flask_pymongo import PyMongo
+from pymongo import MongoClient
+from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 from bson.objectid import ObjectId
 from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -17,37 +18,74 @@ app = Flask(__name__)
 mongo_uri = os.environ.get("MONGO_URI")
 if not mongo_uri:
     print("ERROR: MONGO_URI environment variable is not set!")
+else:
+    print(f"MONGO_URI is configured (length: {len(mongo_uri)})")
     
-app.config["MONGO_URI"] = mongo_uri
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY")
 
-print("Initializing MongoDB...")
-try:
-    mongo = PyMongo(app)
-    print("MongoDB initialized")
-except Exception as e:
-    print(f"Error initializing MongoDB: {e}")
-    mongo = None
+# MongoDB client setup for serverless - lazy connection
+mongo_client = None
+db = None
+
+def get_db():
+    """Get database connection - creates it lazily for serverless"""
+    global mongo_client, db
+    
+    if db is not None:
+        try:
+            # Test if connection is still alive
+            mongo_client.admin.command('ping')
+            return db
+        except:
+            # Connection died, reset it
+            mongo_client = None
+            db = None
+    
+    # Create new connection
+    if mongo_uri:
+        try:
+            print("Creating MongoDB connection...")
+            mongo_client = MongoClient(
+                mongo_uri,
+                serverSelectionTimeoutMS=5000,
+                connectTimeoutMS=10000,
+                socketTimeoutMS=10000,
+                maxPoolSize=1,  # Important for serverless
+                retryWrites=True
+            )
+            # Test the connection
+            mongo_client.admin.command('ping')
+            # Extract database name from URI or use default
+            db_name = mongo_uri.split('/')[-1].split('?')[0] or 'SakoonRehab'
+            db = mongo_client[db_name]
+            print(f"MongoDB connected to database: {db_name}")
+            return db
+        except Exception as e:
+            print(f"MongoDB connection error: {type(e).__name__}: {e}")
+            return None
+    else:
+        print("MONGO_URI not set")
+        return None
 
 # --- HELPER: DATABASE CHECK & INITIAL SETUP ---
 def check_db():
     """Check and test database connection"""
-    if mongo is None:
-        print("MongoDB object is None")
-        return False
     try:
-        # Test the connection with a ping
-        mongo.db.command('ping')
+        database = get_db()
+        if database is None:
+            print("Failed to get database connection")
+            return False
         return True
     except Exception as e:
-        print(f"Database ping failed: {e}")
+        print(f"Database check failed: {e}")
         return False
 
 def ensure_initial_admin():
     """Checks for and creates the default admin user on first run."""
     try:
         if check_db():
-            if mongo.db.users.count_documents({}) == 0:
+            database = get_db()
+            if database.users.count_documents({}) == 0:
                 # Create default admin user from environment variables
                 admin_user = {
                     'username': os.environ.get("DEFAULT_ADMIN_USERNAME", "ImranSaab"),
@@ -56,11 +94,11 @@ def ensure_initial_admin():
                     'name': os.environ.get("DEFAULT_ADMIN_NAME", "Imran Khan"),
                     'created_at': datetime.now()
                 }
-                mongo.db.users.insert_one(admin_user)
+                database.users.insert_one(admin_user)
                 print(f"Initial Admin user '{admin_user['username']}' created.")
             else:
                 # Ensure the admin user has the correct name (in case of previous incorrect setup)
-                mongo.db.users.update_one(
+                database.users.update_one(
                     {"username": os.environ.get("DEFAULT_ADMIN_USERNAME", "ImranSaab")}, 
                     {"$set": {"name": os.environ.get("DEFAULT_ADMIN_NAME", "Imran Khan")}}
                 )
@@ -92,7 +130,7 @@ def role_required(roles):
             if not check_db():
                 return jsonify({"error": "Database connection failed"}), 500
             try:
-                user = mongo.db.users.find_one({"_id": ObjectId(session['user_id'])})
+                user = get_db().users.find_one({"_id": ObjectId(session['user_id'])})
                 if user and user.get('role') in roles:
                     return f(*args, **kwargs)
                 return jsonify({"error": "Access Denied"}), 403
@@ -122,7 +160,7 @@ def health_check():
     try:
         if check_db():
             status['database_connected'] = True
-            status['user_count'] = mongo.db.users.count_documents({})
+            status['user_count'] = get_db().users.count_documents({})
         return jsonify(status), 200
     except Exception as e:
         status['error'] = str(e)
@@ -143,7 +181,7 @@ def login():
         # Ensure admin exists (for serverless cold starts)
         ensure_initial_admin()
         
-        user = mongo.db.users.find_one({"username": data['username']})
+        user = get_db().users.find_one({"username": data['username']})
         
         if user and check_password_hash(user['password'], data['password']):
             session['user_id'] = str(user['_id'])
@@ -171,7 +209,7 @@ def logout():
 def check_session():
     if 'user_id' in session:
         # Fetch user from database to get the name
-        user = mongo.db.users.find_one({"_id": ObjectId(session['user_id'])})
+        user = get_db().users.find_one({"_id": ObjectId(session['user_id'])})
         return jsonify({
             "is_logged_in": True,
             "username": session.get('username'),
@@ -185,7 +223,7 @@ def check_session():
 @role_required(['Admin'])
 def get_users():
     if not check_db(): return jsonify([])
-    users_cursor = mongo.db.users.find({}, {'password': 0})
+    users_cursor = get_db().users.find({}, {'password': 0})
     users = [{**u, '_id': str(u['_id'])} for u in users_cursor]
     return jsonify(users)
 
@@ -197,13 +235,13 @@ def create_user():
     if not all(k in data for k in ['username', 'password', 'role', 'name']):
         return jsonify({"error": "Missing fields"}), 400
     
-    if mongo.db.users.find_one({"username": data['username']}):
+    if get_db().users.find_one({"username": data['username']}):
         return jsonify({"error": "Username already exists"}), 409
 
     data['password'] = generate_password_hash(data['password'])
     data['created_at'] = datetime.now()
     try:
-        result = mongo.db.users.insert_one(data)
+        result = get_db().users.insert_one(data)
         return jsonify({"message": "User created", "id": str(result.inserted_id)}), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -214,7 +252,7 @@ def delete_user(id):
     if not check_db(): return jsonify({"error": "Database error"}), 500
     try:
         # Prevent deleting the logged-in user or the primary admin by ID if necessary
-        mongo.db.users.delete_one({'_id': ObjectId(id)})
+        get_db().users.delete_one({'_id': ObjectId(id)})
         return jsonify({"message": "User deleted"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -228,12 +266,12 @@ def change_password():
     
     try:
         # User is changing their own password
-        user = mongo.db.users.find_one({"_id": ObjectId(user_id)})
+        user = get_db().users.find_one({"_id": ObjectId(user_id)})
         if not user or not check_password_hash(user['password'], data['old_password']):
             return jsonify({"error": "Invalid old password"}), 401
         
         new_password_hash = generate_password_hash(data['new_password'])
-        mongo.db.users.update_one({'_id': ObjectId(user_id)}, {'$set': {'password': new_password_hash}})
+        get_db().users.update_one({'_id': ObjectId(user_id)}, {'$set': {'password': new_password_hash}})
         return jsonify({"message": "Password updated successfully"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -249,16 +287,16 @@ def get_dashboard_metrics():
     
     try:
         # 1. Total Patients
-        total_patients = mongo.db.patients.count_documents({})
+        total_patients = get_db().patients.count_documents({})
 
         # 2. Admissions This Month
-        admissions_this_month = mongo.db.patients.count_documents({
+        admissions_this_month = get_db().patients.count_documents({
             'created_at': {'$gte': start_of_month}
         })
         
         # 3. Total Income This Month (Mock: sum of Monthly Fees from active patients)
         # Assuming monthly fee is stored as 'monthlyFee' on patient record (string, e.g., "10000")
-        active_patients = mongo.db.patients.find()
+        active_patients = get_db().patients.find()
         total_income_this_month = 0
         for p in active_patients:
             try:
@@ -272,7 +310,7 @@ def get_dashboard_metrics():
             {'$match': {'date': {'$gte': start_of_month}}},
             {'$group': {'_id': None, 'total_sales': {'$sum': '$amount'}}}
         ]
-        canteen_sales_result = list(mongo.db.canteen_sales.aggregate(pipeline))
+        canteen_sales_result = list(get_db().canteen_sales.aggregate(pipeline))
         total_canteen_sales_this_month = canteen_sales_result[0]['total_sales'] if canteen_sales_result else 0
         
         return jsonify({
@@ -292,7 +330,7 @@ def get_dashboard_metrics():
 def get_patients():
     if not check_db(): return jsonify([])
     try:
-        patients_cursor = mongo.db.patients.find()
+        patients_cursor = get_db().patients.find()
         patients = []
         for p in patients_cursor:
             p['_id'] = str(p['_id'])
@@ -314,7 +352,7 @@ def add_patient():
         data['notes'] = [] # General Notes (Legacy)
         data['monthlyFee'] = data.get('monthlyFee', '0')
         data['monthlyAllowance'] = data.get('monthlyAllowance', '3000') # Default allowance
-        result = mongo.db.patients.insert_one(data)
+        result = get_db().patients.insert_one(data)
         return jsonify({"message": "Success", "id": str(result.inserted_id)}), 201
     except Exception as e:
         print(f"DB Insert Error: {e}")
@@ -327,7 +365,7 @@ def update_patient(id):
     try:
         data = request.json
         if '_id' in data: del data['_id']
-        mongo.db.patients.update_one({'_id': ObjectId(id)}, {'$set': data})
+        get_db().patients.update_one({'_id': ObjectId(id)}, {'$set': data})
         return jsonify({"message": "Updated"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -337,7 +375,7 @@ def update_patient(id):
 def delete_patient(id):
     if not check_db(): return jsonify({"error": "Database error"}), 500
     try:
-        mongo.db.patients.delete_one({'_id': ObjectId(id)})
+        get_db().patients.delete_one({'_id': ObjectId(id)})
         return jsonify({"message": "Patient deleted"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -357,7 +395,7 @@ def add_session_note(patient_id):
             'recorded_by': session.get('username', 'System'),
             'patient_id': ObjectId(patient_id)
         }
-        result = mongo.db.patient_records.insert_one(note)
+        result = get_db().patient_records.insert_one(note)
         return jsonify({"message": "Session note added", "id": str(result.inserted_id)}), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -376,7 +414,7 @@ def add_medical_record(patient_id):
             'recorded_by': session.get('username', 'System'),
             'patient_id': ObjectId(patient_id)
         }
-        result = mongo.db.patient_records.insert_one(record)
+        result = get_db().patient_records.insert_one(record)
         return jsonify({"message": "Medical record added", "id": str(result.inserted_id)}), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -386,7 +424,7 @@ def add_medical_record(patient_id):
 def get_patient_records(patient_id):
     if not check_db(): return jsonify({"error": "Database error"}), 500
     try:
-        records_cursor = mongo.db.patient_records.find({'patient_id': ObjectId(patient_id)}).sort('date', -1)
+        records_cursor = get_db().patient_records.find({'patient_id': ObjectId(patient_id)}).sort('date', -1)
         records = []
         for r in records_cursor:
             r['_id'] = str(r['_id'])
@@ -418,7 +456,7 @@ def record_canteen_sale():
             'date': datetime.now(),
             'recorded_by': session.get('username', 'Canteen Staff')
         }
-        result = mongo.db.canteen_sales.insert_one(sale)
+        result = get_db().canteen_sales.insert_one(sale)
         return jsonify({"message": "Sale recorded", "id": str(result.inserted_id)}), 201
     except ValueError:
         return jsonify({"error": "Amount must be a number"}), 400
@@ -435,7 +473,7 @@ def get_canteen_breakdown():
     
     try:
         # 1. Fetch all patients with ID, Name, and Allowance
-        patients_cursor = mongo.db.patients.find({}, {'name': 1, 'monthlyAllowance': 1})
+        patients_cursor = get_db().patients.find({}, {'name': 1, 'monthlyAllowance': 1})
         patients_map = {str(p['_id']): {'name': p['name'], 'allowance': p.get('monthlyAllowance', '0'), 'sales': 0} for p in patients_cursor}
         
         # 2. Calculate monthly sales per patient
@@ -443,7 +481,7 @@ def get_canteen_breakdown():
             {'$match': {'date': {'$gte': start_of_month}}},
             {'$group': {'_id': '$patient_id', 'total_sales': {'$sum': '$amount'}}}
         ]
-        sales_breakdown = list(mongo.db.canteen_sales.aggregate(pipeline))
+        sales_breakdown = list(get_db().canteen_sales.aggregate(pipeline))
         
         # 3. Merge data
         for sale in sales_breakdown:
@@ -486,7 +524,7 @@ def export_patients():
         req_data = request.get_json() or {}
         selected_fields = req_data.get('fields', 'all')
         
-        cursor = mongo.db.patients.find()
+        cursor = get_db().patients.find()
         patients_list = list(cursor)
         
         if not patients_list:
