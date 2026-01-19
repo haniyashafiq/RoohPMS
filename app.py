@@ -81,26 +81,45 @@ def check_db():
         return False
 
 def ensure_initial_admin():
-    """Checks for and creates the default admin user on first run."""
+    """Checks for and creates the default admin users on first run."""
     try:
         if check_db():
             database = get_db()
-            if database.users.count_documents({}) == 0:
-                # Create default admin user from environment variables
-                admin_user = {
-                    'username': os.environ.get("DEFAULT_ADMIN_USERNAME", "ImranSaab"),
-                    'password': generate_password_hash(os.environ.get("DEFAULT_ADMIN_PASSWORD", "password123")),
+            
+            # Create or update Admin 1 (Mudasir)
+            admin1_username = os.environ.get("ADMIN1_USERNAME", "mudasir")
+            if not database.users.find_one({"username": admin1_username}):
+                admin1 = {
+                    'username': admin1_username,
+                    'password': generate_password_hash(os.environ.get("ADMIN1_PASSWORD", "password123")),
                     'role': 'Admin',
-                    'name': os.environ.get("DEFAULT_ADMIN_NAME", "Imran Khan"),
+                    'name': os.environ.get("ADMIN1_NAME", "Mudasir"),
                     'created_at': datetime.now()
                 }
-                database.users.insert_one(admin_user)
-                print(f"Initial Admin user '{admin_user['username']}' created.")
+                database.users.insert_one(admin1)
+                print(f"Admin user '{admin1['username']}' created.")
             else:
-                # Ensure the admin user has the correct name (in case of previous incorrect setup)
                 database.users.update_one(
-                    {"username": os.environ.get("DEFAULT_ADMIN_USERNAME", "ImranSaab")}, 
-                    {"$set": {"name": os.environ.get("DEFAULT_ADMIN_NAME", "Imran Khan")}}
+                    {"username": admin1_username},
+                    {"$set": {"name": os.environ.get("ADMIN1_NAME", "Mudasir")}}
+                )
+            
+            # Create or update Admin 2 (Tayyab)
+            admin2_username = os.environ.get("ADMIN2_USERNAME", "tayyab")
+            if not database.users.find_one({"username": admin2_username}):
+                admin2 = {
+                    'username': admin2_username,
+                    'password': generate_password_hash(os.environ.get("ADMIN2_PASSWORD", "password123")),
+                    'role': 'Admin',
+                    'name': os.environ.get("ADMIN2_NAME", "Tayyab"),
+                    'created_at': datetime.now()
+                }
+                database.users.insert_one(admin2)
+                print(f"Admin user '{admin2['username']}' created.")
+            else:
+                database.users.update_one(
+                    {"username": admin2_username},
+                    {"$set": {"name": os.environ.get("ADMIN2_NAME", "Tayyab")}}
                 )
     except Exception as e:
         print(f"Error in ensure_initial_admin: {e}")
