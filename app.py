@@ -21,48 +21,58 @@ if not mongo_uri:
 app.config["MONGO_URI"] = mongo_uri
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY")
 
-print("Connecting to MongoDB...")
+print("Initializing MongoDB...")
 try:
     mongo = PyMongo(app)
-    print("MongoDB connected successfully")
-    # Test the connection
-    mongo.db.command('ping')
-    print("Database ping successful")
+    print("MongoDB initialized")
 except Exception as e:
     print(f"Error initializing MongoDB: {e}")
     mongo = None
 
 # --- HELPER: DATABASE CHECK & INITIAL SETUP ---
 def check_db():
-    if mongo is None or mongo.db is None:
-        print("Database connection failed or not initialized.")
+    """Check and test database connection"""
+    if mongo is None:
+        print("MongoDB object is None")
         return False
-    return True
+    try:
+        # Test the connection with a ping
+        mongo.db.command('ping')
+        return True
+    except Exception as e:
+        print(f"Database ping failed: {e}")
+        return False
 
 def ensure_initial_admin():
     """Checks for and creates the default admin user on first run."""
-    if check_db():
-        if mongo.db.users.count_documents({}) == 0:
-            # Create default admin user from environment variables
-            admin_user = {
-                'username': os.environ.get("DEFAULT_ADMIN_USERNAME", "ImranSaab"),
-                'password': generate_password_hash(os.environ.get("DEFAULT_ADMIN_PASSWORD", "password123")),
-                'role': 'Admin',
-                'name': os.environ.get("DEFAULT_ADMIN_NAME", "Imran Khan"),
-                'created_at': datetime.now()
-            }
-            mongo.db.users.insert_one(admin_user)
-            print(f"Initial Admin user '{admin_user['username']}' created.")
-        else:
-            # Ensure the admin user has the correct name (in case of previous incorrect setup)
-            mongo.db.users.update_one(
-                {"username": os.environ.get("DEFAULT_ADMIN_USERNAME", "ImranSaab")}, 
-                {"$set": {"name": os.environ.get("DEFAULT_ADMIN_NAME", "Imran Khan")}}
-            )
+    try:
+        if check_db():
+            if mongo.db.users.count_documents({}) == 0:
+                # Create default admin user from environment variables
+                admin_user = {
+                    'username': os.environ.get("DEFAULT_ADMIN_USERNAME", "ImranSaab"),
+                    'password': generate_password_hash(os.environ.get("DEFAULT_ADMIN_PASSWORD", "password123")),
+                    'role': 'Admin',
+                    'name': os.environ.get("DEFAULT_ADMIN_NAME", "Imran Khan"),
+                    'created_at': datetime.now()
+                }
+                mongo.db.users.insert_one(admin_user)
+                print(f"Initial Admin user '{admin_user['username']}' created.")
+            else:
+                # Ensure the admin user has the correct name (in case of previous incorrect setup)
+                mongo.db.users.update_one(
+                    {"username": os.environ.get("DEFAULT_ADMIN_USERNAME", "ImranSaab")}, 
+                    {"$set": {"name": os.environ.get("DEFAULT_ADMIN_NAME", "Imran Khan")}}
+                )
+    except Exception as e:
+        print(f"Error in ensure_initial_admin: {e}")
 
-# Run initial setup outside of request context
-with app.app_context():
-    ensure_initial_admin()
+# Run initial setup outside of request context (safe for serverless)
+try:
+    with app.app_context():
+        ensure_initial_admin()
+except Exception as e:
+    print(f"Initial admin setup skipped: {e}")
 
 
 # --- AUTHENTICATION ROUTES ---
@@ -98,23 +108,57 @@ def index():
     # Frontend handles redirection to login if session is missing.
     return render_template('index.html')
 
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Health check endpoint to verify database connectivity"""
+    status = {
+        'status': 'ok',
+        'mongo_uri_configured': bool(os.environ.get('MONGO_URI')),
+        'secret_key_configured': bool(os.environ.get('SECRET_KEY')),
+        'database_connected': False,
+        'user_count': 0
+    }
+    
+    try:
+        if check_db():
+            status['database_connected'] = True
+            status['user_count'] = mongo.db.users.count_documents({})
+        return jsonify(status), 200
+    except Exception as e:
+        status['error'] = str(e)
+        return jsonify(status), 500
+
 @app.route('/api/auth/login', methods=['POST'])
 def login():
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    data = request.json
-    user = mongo.db.users.find_one({"username": data['username']})
-    
-    if user and check_password_hash(user['password'], data['password']):
-        session['user_id'] = str(user['_id'])
-        session['username'] = user['username']
-        session['role'] = user['role']
-        return jsonify({
-            "message": "Login successful",
-            "username": user['username'],
-            "role": user['role'],
-            "name": user.get('name', user['username'])
-        })
-    return jsonify({"error": "Invalid credentials"}), 401
+    try:
+        # Check database connection with detailed logging
+        if not check_db():
+            print(f"Login failed: Database connection check failed. MONGO_URI set: {bool(os.environ.get('MONGO_URI'))}")
+            return jsonify({"error": "Database connection failed. Please contact support."}), 500
+        
+        data = request.json
+        if not data or 'username' not in data or 'password' not in data:
+            return jsonify({"error": "Missing username or password"}), 400
+        
+        # Ensure admin exists (for serverless cold starts)
+        ensure_initial_admin()
+        
+        user = mongo.db.users.find_one({"username": data['username']})
+        
+        if user and check_password_hash(user['password'], data['password']):
+            session['user_id'] = str(user['_id'])
+            session['username'] = user['username']
+            session['role'] = user['role']
+            return jsonify({
+                "message": "Login successful",
+                "username": user['username'],
+                "role": user['role'],
+                "name": user.get('name', user['username'])
+            })
+        return jsonify({"error": "Invalid credentials"}), 401
+    except Exception as e:
+        print(f"Login error: {e}")
+        return jsonify({"error": f"Login failed: {str(e)}"}), 500
 
 @app.route('/api/auth/logout', methods=['POST'])
 def logout():
