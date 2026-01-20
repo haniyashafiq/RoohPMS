@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Rooh Rehab - Hospital Management System</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="icon" type="image/png" href="../static/logo.png" />
+    <link rel="icon" type="image/jpeg" href="/static/RoohLogo.jpg" />
     <link
       rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
@@ -51,13 +51,13 @@
           align-items: center;
           justify-content: center;
           margin-bottom: 20px;
-          border-bottom: 2px solid #2563eb;
+          border-bottom: 2px solid #e8c547;
           padding-bottom: 10px;
           gap: 20px;
         }
         .print-logo-icon {
           font-size: 40pt;
-          color: #2563eb;
+          color: #e8c547;
         }
         .print-title-block {
           text-align: left;
@@ -65,7 +65,7 @@
         .print-pro {
           font-size: 36pt;
           font-weight: bold;
-          color: #2563eb;
+          color: #e8c547;
           line-height: 1;
           letter-spacing: 2px;
         }
@@ -234,8 +234,8 @@
         document.querySelectorAll('.view-section').forEach((el) => el.classList.add('hidden'));
         document.getElementById(viewId).classList.remove('hidden');
         document.querySelectorAll('.nav-item').forEach((el) => {
-          el.classList.remove('bg-blue-700', 'text-white');
-          el.classList.add('text-blue-100');
+          el.classList.remove('bg-[#c9a749]', 'text-white');
+          el.classList.add('text-[#fffbf0]');
         });
 
         const navIdMap = {
@@ -247,8 +247,8 @@
         const navId = navIdMap[viewId];
         const navEl = document.getElementById(navId);
         if (navEl) {
-          navEl.classList.remove('text-blue-100');
-          navEl.classList.add('bg-blue-700', 'text-white');
+          navEl.classList.remove('text-[#fffbf0]');
+          navEl.classList.add('bg-[#c9a749]', 'text-white');
         }
 
         if (viewId === 'dashboard-view') updateDashboard();
@@ -333,7 +333,7 @@
         list.forEach((p) => {
           const id = p._id || p.id;
           const tr = document.createElement('tr');
-          tr.className = 'hover:bg-gray-50 border-b cursor-pointer transition';
+          tr.className = 'hover:bg-[#fffbf0] border-b cursor-pointer transition';
           tr.onclick = (e) => {
             if (e.target.closest('.action-btn')) return;
             showPatientDetail(id);
@@ -350,7 +350,7 @@
             p.idNo || '-'
           }</td><td class="px-6 py-4 text-gray-500">${
             p.contactNo || '-'
-          }</td><td class="px-6 py-4 font-semibold text-blue-700">${monthlyFeeDisplay}</td><td class="px-6 py-4 text-center"><span class="px-2 py-1 text-xs rounded-full bg-blue-100 text-blue-800">Active</span></td><td class="px-6 py-4 text-right">${actionButton}</td>`;
+          }</td><td class="px-6 py-4 font-semibold text-[#d4af37]">${monthlyFeeDisplay}</td><td class="px-6 py-4 text-center"><span class="px-2 py-1 text-xs rounded-full bg-[#fffbf0] text-[#b8941f]">Active</span></td><td class="px-6 py-4 text-right">${actionButton}</td>`;
           tbody.appendChild(tr);
         });
       }
@@ -518,10 +518,10 @@
               month: 'short',
               year: 'numeric',
             });
-            const html = `<div class="p-3 border-b border-gray-100 bg-gray-50 mb-1 rounded">
+            const html = `<div class="p-3 border-b border-gray-100 bg-[#fffbf0] mb-1 rounded">
                         <div class="text-xs text-gray-500 flex justify-between"><span>${date} by ${
                           r.recorded_by
-                        }</span> <span class="font-semibold text-blue-700">${r.title || r.type}</span></div>
+                        }</span> <span class="font-semibold text-[#d4af37]">${r.title || r.type}</span></div>
                         <p class="text-sm mt-1">${r.text || r.details}</p>
                     </div>`;
 
@@ -546,13 +546,13 @@
           document.getElementById('tab-med').classList.add('hidden');
           document
             .getElementById('notes-tab-btn')
-            .classList.add('text-blue-700', 'border-blue-700');
+            .classList.add('text-[#d4af37]', 'border-[#c9a749]');
           document
             .getElementById('notes-tab-btn')
             .classList.remove('text-gray-500', 'border-transparent');
           document
             .getElementById('records-tab-btn')
-            .classList.remove('text-blue-700', 'border-blue-700');
+            .classList.remove('text-[#d4af37]', 'border-[#c9a749]');
           document
             .getElementById('records-tab-btn')
             .classList.add('text-gray-500', 'border-transparent');
@@ -561,13 +561,13 @@
           document.getElementById('tab-med').classList.remove('hidden');
           document
             .getElementById('records-tab-btn')
-            .classList.add('text-blue-700', 'border-blue-700');
+            .classList.add('text-[#d4af37]', 'border-[#c9a749]');
           document
             .getElementById('records-tab-btn')
             .classList.remove('text-gray-500', 'border-transparent');
           document
             .getElementById('notes-tab-btn')
-            .classList.remove('text-blue-700', 'border-blue-700');
+            .classList.remove('text-[#d4af37]', 'border-[#c9a749]');
           document
             .getElementById('notes-tab-btn')
             .classList.add('text-gray-500', 'border-transparent');
@@ -665,7 +665,7 @@
               p.remainingBalance < 0 ? 'text-red-500 font-bold' : 'text-green-500';
 
             tbody.innerHTML += `
-                        <tr class="hover:bg-gray-50 border-b">
+                        <tr class="hover:bg-[#fffbf0] border-b">
                             <td class="px-6 py-4 font-medium">${p.name}</td>
                             <td class="px-6 py-4 text-gray-500">${allowance}</td>
                             <td class="px-6 py-4">${sales}</td>
@@ -726,10 +726,10 @@
                 ? `<button class="text-red-400 hover:text-red-600 p-2 ml-4" onclick="deleteUser('${u._id}')"><i class="fas fa-trash"></i></button>`
                 : '---';
             tbody.innerHTML += `
-                        <tr class="hover:bg-gray-50 border-b">
+                        <tr class="hover:bg-[#fffbf0] border-b">
                             <td class="px-6 py-4 font-medium">${u.name}</td>
                             <td class="px-6 py-4">${u.username}</td>
-                            <td class="px-6 py-4"><span class="px-2 py-1 text-xs rounded-full bg-blue-100 text-blue-800">${u.role}</span></td>
+                            <td class="px-6 py-4"><span class="px-2 py-1 text-xs rounded-full bg-[#fffbf0] text-[#b8941f]">${u.role}</span></td>
                             <td class="px-6 py-4">${deleteButton}</td>
                         </tr>
                     `;
@@ -801,22 +801,18 @@
       window.onload = initApp;
     </script>
   </head>
-  <body class="bg-gray-50 h-screen flex overflow-hidden font-sans text-gray-800">
+  <body class="bg-[#fffbf0] h-screen flex overflow-hidden font-sans text-gray-800">
     <!-- Login View (Default) -->
     <section
       id="login-view"
-      class="view-section w-full h-full flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100"
+      class="view-section w-full h-full flex items-center justify-center"
+      style="background: linear-gradient(to bottom right, #fffbf0, #f4e4c1)"
     >
       <div class="bg-white p-8 rounded-xl shadow-2xl w-full max-w-sm">
         <div class="flex justify-center mb-4">
-          <div
-            class="text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-blue-900"
-            style="font-family: 'Arial Black', sans-serif; letter-spacing: 0.1em"
-          >
-            ROOH
-          </div>
+          <img src="/static/RoohLogo.jpg" alt="Rooh Rehab Logo" class="w-24 h-24 object-contain" />
         </div>
-        <h1 class="text-3xl font-bold text-center text-blue-900 mb-2">Rooh Rehab</h1>
+        <h1 class="text-3xl font-bold text-center mb-2" style="color: #d4af37">Rooh Rehab</h1>
         <p class="text-center text-gray-600 mb-6">Hospital Management System</p>
         <form onsubmit="handleLogin(event)">
           <div class="mb-4">
@@ -826,7 +822,8 @@
             <input
               type="text"
               id="login-username"
-              class="mt-1 w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              class="mt-1 w-full p-3 border border-gray-300 rounded-lg"
+              style="--tw-ring-color: #f4e4c1; outline-color: #f4e4c1"
               required
             />
           </div>
@@ -837,13 +834,17 @@
             <input
               type="password"
               id="login-password"
-              class="mt-1 w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+              class="mt-1 w-full p-3 border border-gray-300 rounded-lg"
+              style="--tw-ring-color: #f4e4c1; outline-color: #f4e4c1"
               required
             />
           </div>
           <button
             type="submit"
-            class="w-full bg-blue-600 text-white p-3 rounded-lg font-semibold hover:bg-blue-700 transition duration-150"
+            class="w-full p-3 rounded-lg font-semibold transition duration-150"
+            style="background-color: #e8c547; color: white"
+            onmouseover="this.style.backgroundColor = '#d4af37'"
+            onmouseout="this.style.backgroundColor = '#e8c547'"
           >
             Log In
           </button>
@@ -854,67 +855,81 @@
 
     <!-- Main App Layout (Hidden until logged in) -->
     <aside
-      class="w-64 bg-gradient-to-b from-blue-900 to-blue-800 text-white flex-none flex flex-col no-print shadow-xl z-20"
+      class="w-64 flex-none flex flex-col no-print shadow-xl z-20"
+      style="background: linear-gradient(to bottom, #e8c547, #d4af37); color: white"
     >
-      <div class="p-6 border-b border-blue-700">
+      <div class="p-6" style="border-bottom: 1px solid #c9a749">
         <div class="flex items-center gap-3 mb-2">
-          <div
-            class="text-3xl font-black text-white"
-            style="font-family: 'Arial Black', sans-serif; letter-spacing: 0.1em"
-          >
-            ROOH
-          </div>
+          <img src="/static/RoohLogo.jpg" alt="Rooh Rehab Logo" class="w-12 h-12 object-contain" />
           <div>
             <h1 class="text-2xl font-bold">Rooh Rehab</h1>
-            <p class="text-xs text-blue-300">Recovery & Wellness</p>
+            <p class="text-xs" style="color: #fffbf0">Recovery & Wellness</p>
           </div>
         </div>
       </div>
-      <div class="p-4 text-xs bg-blue-800 border-b border-blue-700">
+      <div class="p-4 text-xs" style="background-color: #c9a749; border-bottom: 1px solid #b8941f">
         <p class="font-semibold" id="logged-in-user">Loading...</p>
       </div>
       <nav class="flex-1 p-4 space-y-2">
         <button
           id="nav-dash"
           onclick="window.navigateTo('dashboard-view')"
-          class="nav-item w-full text-left px-4 py-3 rounded-lg bg-blue-700 text-white hover:bg-blue-600"
+          class="nav-item w-full text-left px-4 py-3 rounded-lg text-white"
+          style="background-color: #c9a749"
+          onmouseover="this.style.backgroundColor = '#b8941f'"
+          onmouseout="
+            if (!this.classList.contains('bg-[#c9a749]')) this.style.backgroundColor = '#c9a749';
+          "
         >
           Dashboard
         </button>
         <button
           id="nav-patients"
           onclick="window.navigateTo('patients-view')"
-          class="nav-item w-full text-left px-4 py-3 rounded-lg text-blue-100 hover:bg-blue-700"
+          class="nav-item w-full text-left px-4 py-3 rounded-lg"
+          style="color: #fffbf0"
+          onmouseover="this.style.backgroundColor = '#c9a749'"
+          onmouseout="this.style.backgroundColor = 'transparent'"
         >
           Patients Directory
         </button>
         <button
           id="nav-canteen"
           onclick="window.navigateTo('canteen-view')"
-          class="nav-item w-full text-left px-4 py-3 rounded-lg text-blue-100 hover:bg-blue-700"
-          style="display: none"
+          class="nav-item w-full text-left px-4 py-3 rounded-lg"
+          style="color: #fffbf0; display: none"
+          onmouseover="this.style.backgroundColor = '#c9a749'"
+          onmouseout="this.style.backgroundColor = 'transparent'"
         >
           Canteen Management
         </button>
         <button
           id="nav-users"
           onclick="window.navigateTo('user-management-view')"
-          class="nav-item w-full text-left px-4 py-3 rounded-lg text-blue-100 hover:bg-blue-700"
-          style="display: none"
+          class="nav-item w-full text-left px-4 py-3 rounded-lg"
+          style="color: #fffbf0; display: none"
+          onmouseover="this.style.backgroundColor = '#c9a749'"
+          onmouseout="this.style.backgroundColor = 'transparent'"
         >
           User Management
         </button>
       </nav>
-      <div class="p-4 border-t border-blue-700">
+      <div class="p-4" style="border-top: 1px solid #c9a749">
         <button
           onclick="changePasswordModal()"
-          class="w-full text-left px-4 py-2 text-sm text-blue-200 hover:text-white"
+          class="w-full text-left px-4 py-2 text-sm"
+          style="color: #fffbf0"
+          onmouseover="this.style.color = 'white'"
+          onmouseout="this.style.color = '#fffbf0'"
         >
           <i class="fas fa-key mr-2"></i> Change Password
         </button>
         <button
           onclick="handleLogout()"
-          class="w-full text-left px-4 py-2 text-sm text-blue-200 hover:text-white"
+          class="w-full text-left px-4 py-2 text-sm"
+          style="color: #fffbf0"
+          onmouseover="this.style.color = 'white'"
+          onmouseout="this.style.color = '#fffbf0'"
         >
           <i class="fas fa-sign-out-alt mr-2"></i> Logout
         </button>
@@ -925,7 +940,10 @@
       <section id="dashboard-view" class="view-section hidden p-8">
         <h2 class="text-2xl font-bold mb-6">System Overview</h2>
         <div class="grid grid-cols-4 gap-6 mb-8">
-          <div class="bg-white p-6 rounded-lg shadow-md border-l-4 border-blue-600">
+          <div
+            class="bg-white p-6 rounded-lg shadow-md border-l-4"
+            style="border-left-color: #e8c547"
+          >
             <h3 class="text-sm font-medium text-gray-500">Total Patients</h3>
             <p class="text-3xl font-bold text-gray-900" id="dash-total">0</p>
           </div>
@@ -961,7 +979,7 @@
             </button>
             <button
               onclick="addNewPatient()"
-              class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition"
+              class="bg-[#e8c547] text-white px-4 py-2 rounded-lg hover:bg-[#d4af37] transition"
             >
               <i class="fas fa-plus mr-2"></i>New Admission
             </button>
@@ -969,7 +987,7 @@
         </div>
         <div class="bg-white rounded-lg shadow-md overflow-x-auto">
           <table class="min-w-full divide-y divide-gray-200">
-            <thead class="bg-gray-50">
+            <thead class="bg-[#fffbf0]">
               <tr>
                 <th
                   class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
@@ -1013,7 +1031,7 @@
         <div class="flex justify-between mb-4 no-print">
           <button
             onclick="navigateTo('patients-view')"
-            class="text-blue-600 hover:text-blue-800 font-semibold"
+            class="text-[#e8c547] hover:text-[#b8941f] font-semibold"
           >
             <i class="fas fa-arrow-left mr-2"></i>Back to Directory
           </button>
@@ -1027,7 +1045,7 @@
             <button
               id="save-det-btn"
               onclick="document.getElementById('save-det-btn-submit').click()"
-              class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition"
+              class="bg-[#e8c547] text-white px-4 py-2 rounded-lg hover:bg-[#d4af37] transition"
             >
               <i class="fas fa-save mr-2"></i>Update Record
             </button>
@@ -1093,7 +1111,7 @@
               <button
                 onclick="showTab('notes')"
                 id="notes-tab-btn"
-                class="tab-button flex-1 text-center py-2 text-blue-700 font-semibold border-b-2 border-blue-700"
+                class="tab-button flex-1 text-center py-2 text-[#d4af37] font-semibold border-b-2 border-[#c9a749]"
               >
                 Notes
               </button>
@@ -1108,7 +1126,7 @@
 
             <!-- TAB: Notes -->
             <div id="tab-notes" class="flex-1 overflow-y-auto flex flex-col">
-              <h4 class="font-bold mb-2 text-blue-800">Psychologist Session Notes</h4>
+              <h4 class="font-bold mb-2 text-[#b8941f]">Psychologist Session Notes</h4>
               <!-- NEW CONTAINER FOR SESSION NOTES -->
               <div
                 id="session-notes-list"
@@ -1118,7 +1136,7 @@
               <!-- FIXED: ADDED CONTAINER FOR LEGACY NOTES TO PREVENT JS ERROR -->
               <div class="mb-4">
                 <h5 class="text-sm font-bold text-gray-500 mb-1">General Notes</h5>
-                <div id="notes-list" class="text-sm text-gray-600 bg-gray-50 p-2 rounded"></div>
+                <div id="notes-list" class="text-sm text-gray-600 bg-[#fffbf0] p-2 rounded"></div>
               </div>
 
               <form id="add-session-note-form" onsubmit="addSessionNote(event)">
@@ -1130,7 +1148,7 @@
                 ></textarea>
                 <button
                   type="submit"
-                  class="bg-blue-600 text-white w-full py-2 rounded hover:bg-blue-700"
+                  class="bg-[#e8c547] text-white w-full py-2 rounded hover:bg-[#d4af37]"
                 >
                   Add Session Note
                 </button>
@@ -1139,7 +1157,7 @@
 
             <!-- TAB: Medical Records -->
             <div id="tab-med" class="hidden flex-1 overflow-y-auto flex flex-col">
-              <h4 class="font-bold mb-2 text-blue-800">Tests, Reports & History</h4>
+              <h4 class="font-bold mb-2 text-[#b8941f]">Tests, Reports & History</h4>
               <div
                 id="medical-records-list"
                 class="flex-1 overflow-y-auto mb-4 border p-3 rounded"
@@ -1158,7 +1176,7 @@
                 ></textarea>
                 <button
                   type="submit"
-                  class="bg-blue-600 text-white w-full py-2 rounded hover:bg-blue-700"
+                  class="bg-[#e8c547] text-white w-full py-2 rounded hover:bg-[#d4af37]"
                 >
                   Add Medical Record
                 </button>
@@ -1224,7 +1242,7 @@
               Monthly Patient Breakdown
             </h3>
             <table class="min-w-full divide-y divide-gray-200">
-              <thead class="bg-gray-50">
+              <thead class="bg-[#fffbf0]">
                 <tr>
                   <th
                     class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
@@ -1260,7 +1278,7 @@
         <div class="grid grid-cols-3 gap-8">
           <!-- User Creation Panel -->
           <div class="col-span-1 bg-white p-6 rounded-lg shadow-md h-min">
-            <h3 class="text-xl font-bold border-b pb-2 mb-4 text-blue-600">Create New User</h3>
+            <h3 class="text-xl font-bold border-b pb-2 mb-4 text-[#e8c547]">Create New User</h3>
             <form onsubmit="createUser(event)">
               <input
                 name="new-name"
@@ -1290,7 +1308,7 @@
               </select>
               <button
                 type="submit"
-                class="w-full bg-blue-600 text-white p-3 rounded-lg font-semibold hover:bg-blue-700 transition"
+                class="w-full bg-[#e8c547] text-white p-3 rounded-lg font-semibold hover:bg-[#d4af37] transition"
               >
                 Create Account
               </button>
@@ -1298,9 +1316,9 @@
           </div>
           <!-- User List -->
           <div class="col-span-2 bg-white rounded-lg shadow-md overflow-x-auto">
-            <h3 class="text-xl font-bold border-b p-4 text-blue-600">Current System Users</h3>
+            <h3 class="text-xl font-bold border-b p-4 text-[#e8c547]">Current System Users</h3>
             <table class="min-w-full divide-y divide-gray-200">
-              <thead class="bg-gray-50">
+              <thead class="bg-[#fffbf0]">
                 <tr>
                   <th
                     class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
@@ -1344,7 +1362,7 @@
         >
         <button
           onclick="downloadExcel()"
-          class="bg-blue-600 text-white w-full py-3 rounded-lg mt-4 hover:bg-blue-700 transition"
+          class="bg-[#e8c547] text-white w-full py-3 rounded-lg mt-4 hover:bg-[#d4af37] transition"
         >
           Download
         </button>
@@ -1421,7 +1439,7 @@
           />
           <button
             type="submit"
-            class="bg-blue-600 text-white w-full py-3 rounded-lg font-semibold hover:bg-blue-700 transition"
+            class="bg-[#e8c547] text-white w-full py-3 rounded-lg font-semibold hover:bg-[#d4af37] transition"
           >
             Change Password
           </button>
