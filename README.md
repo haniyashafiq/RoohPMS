@@ -1,4 +1,4 @@
-# Sakoon Rehab - Patient Management System
+# Rooh Rehab - Patient Management System
 
 A comprehensive Flask-based Patient Management System for rehabilitation centers with features for patient records, user management, session notes, medical records, and canteen management.
 
@@ -68,7 +68,7 @@ pip install -r requirements.txt
 
    ```env
    # MongoDB Configuration
-   MONGO_URI=mongodb+srv://username:password@cluster.mongodb.net/SakoonRehab?appName=Cluster0
+   MONGO_URI=mongodb+srv://username:password@cluster.mongodb.net/RoohRehab?appName=Cluster0
 
    # Flask Configuration
    SECRET_KEY=your_secret_key_here_change_in_production
@@ -105,12 +105,12 @@ pip install -r requirements.txt
    - Choose "Connect your application"
    - Copy the connection string
    - Replace `<password>` with your database user password
-   - Add your database name (e.g., `SakoonRehab`) between `.net/` and `?`
+   - Add your database name (e.g., `RoohRehab`) between `.net/` and `?`
 
    Example:
 
    ```
-   mongodb+srv://username:password@cluster0.xxxxx.mongodb.net/SakoonRehab?appName=Cluster0
+   mongodb+srv://username:password@cluster0.xxxxx.mongodb.net/RoohRehab?appName=Cluster0
    ```
 
 6. **Update `.env` file** with your MongoDB URI

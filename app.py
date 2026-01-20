@@ -56,7 +56,7 @@ def get_db():
             # Test the connection
             mongo_client.admin.command('ping')
             # Extract database name from URI or use default
-            db_name = mongo_uri.split('/')[-1].split('?')[0] or 'SakoonRehab'
+            db_name = mongo_uri.split('/')[-1].split('?')[0] or 'RoohRehab'
             db = mongo_client[db_name]
             print(f"MongoDB connected to database: {db_name}")
             return db
