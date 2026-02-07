@@ -1,5 +1,5 @@
 from flask import Flask, render_template, request, jsonify, send_file, session, redirect, url_for
-from flask_pymongo import PyMongo
+from pymongo import MongoClient
 from bson.objectid import ObjectId
 from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -20,7 +20,6 @@ app = Flask(__name__)
 mongo_uri = os.environ.get("MONGO_URI")
 if not mongo_uri:
     raise ValueError("MONGO_URI environment variable is required")
-app.config["MONGO_URI"] = mongo_uri
 
 secret_key = os.environ.get("SECRET_KEY")
 if not secret_key:
@@ -30,20 +29,62 @@ app.config["GMAIL_USER"] = os.environ.get("GMAIL_USER")
 app.config["GMAIL_APP_PASSWORD"] = os.environ.get("GMAIL_APP_PASSWORD")
 app.config["PASSWORD_RESET_EXPIRY_MINUTES"] = int(os.environ.get("PASSWORD_RESET_EXPIRY_MINUTES", "30"))
 
-try:
-    mongo = PyMongo(app)
-except Exception as e:
-    print(f"Error initializing MongoDB: {e}")
-    mongo = None
+# MongoDB client setup for serverless - lazy connection
+mongo_client = None
+db = None
+
+def get_db():
+    """Get database connection - creates it lazily for serverless"""
+    global mongo_client, db
+    
+    if db is not None:
+        try:
+            # Test if connection is still alive
+            mongo_client.admin.command('ping')
+            return db
+        except:
+            # Connection died, reset it
+            mongo_client = None
+            db = None
+    
+    # Create new connection
+    if mongo_uri:
+        try:
+            mongo_client = MongoClient(
+                mongo_uri,
+                serverSelectionTimeoutMS=5000,
+                connectTimeoutMS=10000,
+                socketTimeoutMS=10000,
+                maxPoolSize=1,  # Important for serverless
+                retryWrites=True
+            )
+            # Test the connection
+            mongo_client.admin.command('ping')
+            # Extract database name from URI or use default
+            db_name = mongo_uri.split('/')[-1].split('?')[0] or 'RoohPMS'
+            db = mongo_client[db_name]
+            return db
+        except Exception as e:
+            print(f"MongoDB connection error: {type(e).__name__}: {e}")
+            return None
+    else:
+        print("MONGO_URI not set")
+        return None
 
 serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"])
 
 # --- HELPER: DATABASE CHECK & INITIAL SETUP ---
 def check_db():
-    if mongo is None or mongo.db is None:
-        print("Database connection failed or not initialized.")
+    """Check and test database connection"""
+    try:
+        database = get_db()
+        if database is None:
+            print("Failed to get database connection")
+            return False
+        return True
+    except Exception as e:
+        print(f"Database check failed: {e}")
         return False
-    return True
 
 def clean_input_data(data):
     """Strip trailing and leading spaces from string values in a dictionary."""
@@ -65,7 +106,7 @@ def clean_input_data(data):
 def ensure_initial_admin():
     """Checks for and creates the default admin users on first run."""
     if check_db():
-        if mongo.db.users.count_documents({}) == 0:
+        if get_db().users.count_documents({}) == 0:
             # Create Admin 1 - Mudasir
             admin1_user = {
                 'username': os.environ.get('ADMIN1_USERNAME', 'mudasir'),
@@ -75,7 +116,7 @@ def ensure_initial_admin():
                 'email': f"{os.environ.get('ADMIN1_USERNAME', 'mudasir')}@example.com",
                 'created_at': datetime.now()
             }
-            mongo.db.users.insert_one(admin1_user)
+            get_db().users.insert_one(admin1_user)
             print(f"Initial Admin user '{admin1_user['username']}' created.")
             
             # Create Admin 2 - Tayyab
@@ -87,12 +128,11 @@ def ensure_initial_admin():
                 'email': f"{os.environ.get('ADMIN2_USERNAME', 'tayyab')}@example.com",
                 'created_at': datetime.now()
             }
-            mongo.db.users.insert_one(admin2_user)
+            get_db().users.insert_one(admin2_user)
             print(f"Initial Admin user '{admin2_user['username']}' created.")
 
-# Run initial setup outside of request context
-with app.app_context():
-    ensure_initial_admin()
+# Note: Initial admin setup removed from module load for serverless compatibility
+# Admins are already created in database. If needed, run migrate_admins.py separately.
 
 
 def normalize_email(value):
@@ -150,7 +190,7 @@ def role_required(roles):
     def decorator(f):
         @login_required
         def wrapper(*args, **kwargs):
-            user = mongo.db.users.find_one({"_id": ObjectId(session['user_id'])})
+            user = get_db().users.find_one({"_id": ObjectId(session['user_id'])})
             if user and user.get('role') in roles:
                 return f(*args, **kwargs)
             return jsonify({"error": "Access Denied"}), 403
@@ -235,7 +275,7 @@ def index():
 def login():
     if not check_db(): return jsonify({"error": "Database error"}), 500
     data = clean_input_data(request.json)
-    user = mongo.db.users.find_one({"username": data['username']})
+    user = get_db().users.find_one({"username": data['username']})
     
     if user and check_password_hash(user['password'], data['password']):
         session['user_id'] = str(user['_id'])
@@ -267,7 +307,7 @@ def forgot_password():
     if not app.config.get("GMAIL_USER") or not app.config.get("GMAIL_APP_PASSWORD"):
         return jsonify({"error": "Email service not configured"}), 500
 
-    user = mongo.db.users.find_one({"username": username})
+    user = get_db().users.find_one({"username": username})
     if not user:
         return jsonify({"error": "No account found for that username."}), 404
 
@@ -315,12 +355,12 @@ def reset_password():
     if not user_id:
         return jsonify({"error": "Invalid reset token"}), 400
 
-    user = mongo.db.users.find_one({"_id": ObjectId(user_id)})
+    user = get_db().users.find_one({"_id": ObjectId(user_id)})
     if not user or (email and normalize_email(user.get('email')) != email):
         return jsonify({"error": "Invalid reset token"}), 400
 
     new_password_hash = generate_password_hash(new_password)
-    mongo.db.users.update_one({'_id': ObjectId(user_id)}, {'$set': {'password': new_password_hash}})
+    get_db().users.update_one({'_id': ObjectId(user_id)}, {'$set': {'password': new_password_hash}})
 
     return jsonify({"message": "Password has been reset successfully"})
 
@@ -347,7 +387,7 @@ def check_session():
 @role_required(['Admin'])
 def get_users():
     if not check_db(): return jsonify([])
-    users_cursor = mongo.db.users.find({}, {'password': 0})
+    users_cursor = get_db().users.find({}, {'password': 0})
     users = [{**u, '_id': str(u['_id'])} for u in users_cursor]
     return jsonify(users)
 
@@ -363,16 +403,16 @@ def create_user():
     if not data['email']:
         return jsonify({"error": "Valid email required"}), 400
     
-    if mongo.db.users.find_one({"username": data['username']}):
+    if get_db().users.find_one({"username": data['username']}):
         return jsonify({"error": "Username already exists"}), 409
 
-    if mongo.db.users.find_one({"email": data['email']}):
+    if get_db().users.find_one({"email": data['email']}):
         return jsonify({"error": "Email already exists"}), 409
 
     data['password'] = generate_password_hash(data['password'])
     data['created_at'] = datetime.now()
     try:
-        result = mongo.db.users.insert_one(data)
+        result = get_db().users.insert_one(data)
         return jsonify({"message": "User created", "id": str(result.inserted_id)}), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -382,7 +422,7 @@ def create_user():
 # def delete_patient(id):
 #     if not check_db(): return jsonify({"error": "Database error"}), 500
 #     try:
-#         mongo.db.patients.delete_one({'_id': ObjectId(id)})
+#         get_db().patients.delete_one({'_id': ObjectId(id)})
 #         return jsonify({"message": "Patient deleted"})
 #     except Exception as e:
 #         return jsonify({"error": str(e)}), 500
@@ -397,12 +437,12 @@ def change_password():
     
     try:
         # User is changing their own password
-        user = mongo.db.users.find_one({"_id": ObjectId(user_id)})
+        user = get_db().users.find_one({"_id": ObjectId(user_id)})
         if not user or not check_password_hash(user['password'], data['old_password']):
             return jsonify({"error": "Invalid old password"}), 401
         
         new_password_hash = generate_password_hash(data['new_password'])
-        mongo.db.users.update_one({'_id': ObjectId(user_id)}, {'$set': {'password': new_password_hash}})
+        get_db().users.update_one({'_id': ObjectId(user_id)}, {'$set': {'password': new_password_hash}})
         return jsonify({"message": "Password updated successfully"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -423,11 +463,11 @@ def get_dashboard_metrics():
     
     try:
         # 1. Basic Counts
-        total_patients = mongo.db.patients.count_documents({})
-        admissions_this_month = mongo.db.patients.count_documents({
+        total_patients = get_db().patients.count_documents({})
+        admissions_this_month = get_db().patients.count_documents({
             'admissionDate': {'$gte': start_of_month.isoformat(), '$lt': end_of_month.isoformat()}
         })
-        discharges_this_month = mongo.db.patients.count_documents({
+        discharges_this_month = get_db().patients.count_documents({
             'isDischarged': True,
             'dischargeDate': {'$gte': start_of_month.isoformat(), '$lt': end_of_month.isoformat()}
         })
@@ -435,7 +475,7 @@ def get_dashboard_metrics():
         # 2. Total Expected Incoming (Remaining Balance Calculation)
         # Fetch ALL canteen sales first to create a map
         # Note: We group by patient_id. We convert ObjectId to string for easy matching.
-        all_canteen_sales = list(mongo.db.canteen_sales.find())
+        all_canteen_sales = list(get_db().canteen_sales.find())
         canteen_map = {}
         
         for sale in all_canteen_sales:
@@ -446,7 +486,7 @@ def get_dashboard_metrics():
                 canteen_map[pid] = canteen_map.get(pid, 0) + amount
 
         # Fetch Active Patients
-        active_patients = list(mongo.db.patients.find({'isDischarged': {'$ne': True}}))
+        active_patients = list(get_db().patients.find({'isDischarged': {'$ne': True}}))
         
         total_expected_balance = 0
         
@@ -495,7 +535,7 @@ def get_dashboard_metrics():
             {'$match': {'date': {'$gte': start_of_month, '$lt': end_of_month}}},
             {'$group': {'_id': None, 'total_sales': {'$sum': '$amount'}}}
         ]
-        canteen_month_res = list(mongo.db.canteen_sales.aggregate(pipeline_month))
+        canteen_month_res = list(get_db().canteen_sales.aggregate(pipeline_month))
         total_canteen_sales_this_month = canteen_month_res[0]['total_sales'] if canteen_month_res else 0
         
         return jsonify({
@@ -522,7 +562,7 @@ def debug_dashboard():
     
     try:
         # Get all patients with fees
-        patients = list(mongo.db.patients.find())
+        patients = list(get_db().patients.find())
         patient_data = []
         for p in patients:
             try:
@@ -544,10 +584,10 @@ def debug_dashboard():
             {'$match': {'date': {'$gte': start_of_month}}},
             {'$group': {'_id': None, 'total': {'$sum': '$amount'}, 'count': {'$sum': 1}}}
         ]
-        canteen_data = list(mongo.db.canteen_sales.aggregate(canteen_pipeline))
+        canteen_data = list(get_db().canteen_sales.aggregate(canteen_pipeline))
         
         # Get all canteen sales for context
-        all_canteen = list(mongo.db.canteen_sales.find().sort('date', -1).limit(5))
+        all_canteen = list(get_db().canteen_sales.find().sort('date', -1).limit(5))
         canteen_sample = [{
             'date': str(c.get('date')),
             'amount': c.get('amount'),
@@ -578,7 +618,7 @@ def get_month_admissions():
     start_of_month = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     try:
-        cursor = mongo.db.patients.find({'created_at': {'$gte': start_of_month}})
+        cursor = get_db().patients.find({'created_at': {'$gte': start_of_month}})
         admissions = []
         for p in cursor:
             admissions.append({
@@ -599,10 +639,10 @@ def get_month_admissions():
 def get_patients():
     if not check_db(): return jsonify([])
     try:
-        patients_cursor = mongo.db.patients.find()
+        patients_cursor = get_db().patients.find()
         
         # Aggregate total canteen spending for all patients
-        canteen_totals_agg = list(mongo.db.canteen_sales.aggregate([
+        canteen_totals_agg = list(get_db().canteen_sales.aggregate([
             {'$match': {
                 '$or': [
                     {'entry_type': {'$exists': False}},
@@ -659,7 +699,7 @@ def add_patient():
         else:
             data['laundryAmount'] = 0  # 0 if not enabled
         
-        result = mongo.db.patients.insert_one(data)
+        result = get_db().patients.insert_one(data)
         return jsonify({"message": "Success", "id": str(result.inserted_id)}), 201
     except Exception as e:
         print(f"DB Insert Error: {e}")
@@ -684,7 +724,7 @@ def update_patient(id):
                 if field in data:
                     del data[field]
         
-        mongo.db.patients.update_one({'_id': ObjectId(id)}, {'$set': data})
+        get_db().patients.update_one({'_id': ObjectId(id)}, {'$set': data})
         return jsonify({"message": "Updated"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -695,10 +735,10 @@ def delete_patient(id):
     if not check_db(): return jsonify({"error": "Database error"}), 500
     try:
         # Delete the patient
-        result = mongo.db.patients.delete_one({'_id': ObjectId(id)})
+        result = get_db().patients.delete_one({'_id': ObjectId(id)})
         if result.deleted_count > 0:
             # Also delete associated records (session notes and medical records)
-            mongo.db.patient_records.delete_many({'patient_id': id})
+            get_db().patient_records.delete_many({'patient_id': id})
             return jsonify({"message": "Patient deleted successfully"}), 200
         else:
             return jsonify({"error": "Patient not found"}), 404
@@ -721,7 +761,7 @@ def add_session_note(patient_id):
             'recorded_by': session.get('username', 'System'),
             'patient_id': ObjectId(patient_id)
         }
-        result = mongo.db.patient_records.insert_one(note)
+        result = get_db().patient_records.insert_one(note)
         return jsonify({"message": "Session note added", "id": str(result.inserted_id)}), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -740,7 +780,7 @@ def add_medical_record(patient_id):
             'recorded_by': session.get('username', 'System'),
             'patient_id': ObjectId(patient_id)
         }
-        result = mongo.db.patient_records.insert_one(record)
+        result = get_db().patient_records.insert_one(record)
         return jsonify({"message": "Medical record added", "id": str(result.inserted_id)}), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -750,7 +790,7 @@ def add_medical_record(patient_id):
 def get_patient_records(patient_id):
     if not check_db(): return jsonify({"error": "Database error"}), 500
     try:
-        records_cursor = mongo.db.patient_records.find({'patient_id': ObjectId(patient_id)}).sort('date', -1)
+        records_cursor = get_db().patient_records.find({'patient_id': ObjectId(patient_id)}).sort('date', -1)
         records = []
         for r in records_cursor:
             r['_id'] = str(r['_id'])
@@ -789,7 +829,7 @@ def record_canteen_sale():
             'date': sale_date,
             'recorded_by': session.get('username', 'Canteen Staff')
         }
-        result = mongo.db.canteen_sales.insert_one(sale)
+        result = get_db().canteen_sales.insert_one(sale)
         return jsonify({"message": "Sale recorded", "id": str(result.inserted_id)}), 201
     except ValueError:
         return jsonify({"error": "Amount must be a number"}), 400
@@ -812,7 +852,7 @@ def get_canteen_breakdown():
     
     try:
         # 1. Fetch all patients with ID, Name, Allowance AND isDischarged
-        patients_cursor = mongo.db.patients.find({}, {
+        patients_cursor = get_db().patients.find({}, {
             'name': 1, 'monthlyAllowance': 1, 'isDischarged': 1
         })
         
@@ -831,7 +871,7 @@ def get_canteen_breakdown():
             {'$match': {'date': {'$gte': start_of_month}}},
             {'$group': {'_id': '$patient_id', 'total_sales': {'$sum': '$amount'}}}
         ]
-        sales_breakdown = list(mongo.db.canteen_sales.aggregate(pipeline))
+        sales_breakdown = list(get_db().canteen_sales.aggregate(pipeline))
         
         # 3. Merge data
         for sale in sales_breakdown:
@@ -888,7 +928,7 @@ def get_daily_canteen_sheet():
         end_of_day = target_date.replace(hour=23, minute=59, second=59, microsecond=999999)
         
         # Fetch all active patients
-        patients_cursor = mongo.db.patients.find(
+        patients_cursor = get_db().patients.find(
             {'isDischarged': {'$ne': True}},
             {'name': 1, 'monthlyAllowance': 1}
         ).sort('name', 1)
@@ -902,7 +942,7 @@ def get_daily_canteen_sheet():
                 'total': {'$sum': '$amount'}
             }}
         ]
-        daily_sales = {str(s['_id']): s for s in mongo.db.canteen_sales.aggregate(pipeline)}
+        daily_sales = {str(s['_id']): s for s in get_db().canteen_sales.aggregate(pipeline)}
         
         # Build sheet
         sheet = []
@@ -940,12 +980,12 @@ def get_canteen_sales_history():
             query['patient_id'] = ObjectId(patient_id)
         
         # Get sales with patient names
-        sales_cursor = mongo.db.canteen_sales.find(query).sort('date', -1).limit(100)
+        sales_cursor = get_db().canteen_sales.find(query).sort('date', -1).limit(100)
         
         sales_list = []
         for sale in sales_cursor:
             # Get patient name
-            patient = mongo.db.patients.find_one({'_id': sale['patient_id']}, {'name': 1})
+            patient = get_db().patients.find_one({'_id': sale['patient_id']}, {'name': 1})
             
             sales_list.append({
                 'id': str(sale['_id']),
@@ -983,7 +1023,7 @@ def get_canteen_monthly_table():
         days_in_month = (end_of_month - start_of_month).days
         
         # Get all patients with their allowances
-        patients_list = list(mongo.db.patients.find({}, {
+        patients_list = list(get_db().patients.find({}, {
             'name': 1,
             'monthlyAllowance': 1,
             'isDischarged': 1,
@@ -992,7 +1032,7 @@ def get_canteen_monthly_table():
         
         # Get manual old balance overrides for this month/year
         balance_overrides = {}
-        overrides_cursor = mongo.db.canteen_balance_overrides.find({
+        overrides_cursor = get_db().canteen_balance_overrides.find({
             'month': month,
             'year': year
         })
@@ -1013,7 +1053,7 @@ def get_canteen_monthly_table():
                 return 0
         
         # BATCH QUERY: Get all previous sales for all patients at once
-        previous_sales_agg = list(mongo.db.canteen_sales.aggregate([
+        previous_sales_agg = list(get_db().canteen_sales.aggregate([
             {'$match': {
                 'patient_id': {'$in': patient_ids},
                 'date': {'$lt': start_of_month},
@@ -1027,7 +1067,7 @@ def get_canteen_monthly_table():
         previous_sales_map = {str(item['_id']): item['total'] for item in previous_sales_agg}
         
         # BATCH QUERY: Get all previous adjustments
-        previous_adj_agg = list(mongo.db.canteen_sales.aggregate([
+        previous_adj_agg = list(get_db().canteen_sales.aggregate([
             {'$match': {
                 'patient_id': {'$in': patient_ids},
                 'date': {'$lt': start_of_month},
@@ -1038,7 +1078,7 @@ def get_canteen_monthly_table():
         previous_adj_map = {str(item['_id']): item['total'] for item in previous_adj_agg}
         
         # BATCH QUERY: Get all current month daily sales
-        current_month_sales = list(mongo.db.canteen_sales.find({
+        current_month_sales = list(get_db().canteen_sales.find({
             'patient_id': {'$in': patient_ids},
             'date': {'$gte': start_of_month, '$lt': end_of_month},
             '$or': [
@@ -1048,7 +1088,7 @@ def get_canteen_monthly_table():
         }))
         
         # BATCH QUERY: Get all "other" entries for current month
-        other_entries = list(mongo.db.canteen_sales.find({
+        other_entries = list(get_db().canteen_sales.find({
             'patient_id': {'$in': patient_ids},
             'date': {'$gte': start_of_month, '$lt': end_of_month},
             'entry_type': 'other'
@@ -1056,7 +1096,7 @@ def get_canteen_monthly_table():
         other_map = {str(item['patient_id']): item['amount'] for item in other_entries}
         
         # BATCH QUERY: Get all-time totals for all patients
-        all_time_agg = list(mongo.db.canteen_sales.aggregate([
+        all_time_agg = list(get_db().canteen_sales.aggregate([
             {'$match': {
                 'patient_id': {'$in': patient_ids},
                 '$or': [
@@ -1157,7 +1197,7 @@ def save_canteen_old_balance():
         old_balance = int(data.get('old_balance', 0))
         
         # Upsert the override
-        mongo.db.canteen_balance_overrides.update_one(
+        get_db().canteen_balance_overrides.update_one(
             {
                 'patient_id': ObjectId(patient_id),
                 'month': month,
@@ -1195,7 +1235,7 @@ def save_canteen_daily_entry():
         entry_type = data['entry_type']  # 'daily' or 'other'
         
         # Check if entry already exists
-        existing_entry = mongo.db.canteen_sales.find_one({
+        existing_entry = get_db().canteen_sales.find_one({
             'patient_id': patient_id,
             'date': entry_date,
             'entry_type': entry_type
@@ -1212,7 +1252,7 @@ def save_canteen_daily_entry():
                 return jsonify({"error": "Canteen staff cannot edit existing entries"}), 403
             elif user_role == 'Admin':
                 # Admin can edit
-                mongo.db.canteen_sales.update_one(
+                get_db().canteen_sales.update_one(
                     {'_id': existing_entry['_id']},
                     {'$set': {
                         'amount': amount,
@@ -1232,7 +1272,7 @@ def save_canteen_daily_entry():
                 'recorded_by': username,
                 'created_at': datetime.now()
             }
-            result = mongo.db.canteen_sales.insert_one(new_entry)
+            result = get_db().canteen_sales.insert_one(new_entry)
             return jsonify({"message": "Entry recorded", "id": str(result.inserted_id)}), 201
             
     except ValueError as ve:
@@ -1249,7 +1289,7 @@ def list_expenses():
     if not check_db():
         return jsonify({"error": "Database error"}), 500
     try:
-        cursor = mongo.db.expenses.find().sort('date', -1)
+        cursor = get_db().expenses.find().sort('date', -1)
         expenses = []
         for e in cursor:
             expenses.append({
@@ -1266,7 +1306,7 @@ def list_expenses():
         # Automated income entries (not stored, just surfaced)
         try:
             # Monthly fees sum (all patients)
-            patients = mongo.db.patients.find()
+            patients = get_db().patients.find()
             total_fees = 0
             for p in patients:
                 try:
@@ -1281,7 +1321,7 @@ def list_expenses():
                 {'$match': {'date': {'$gte': start_of_month}}},
                 {'$group': {'_id': None, 'total_sales': {'$sum': '$amount'}}}
             ]
-            sales_result = list(mongo.db.canteen_sales.aggregate(pipeline))
+            sales_result = list(get_db().canteen_sales.aggregate(pipeline))
             total_canteen = sales_result[0]['total_sales'] if sales_result else 0
 
             today_iso = datetime.now().date().isoformat()
@@ -1338,7 +1378,7 @@ def add_expense():
         'created_at': datetime.now()
     }
     try:
-        result = mongo.db.expenses.insert_one(expense)
+        result = get_db().expenses.insert_one(expense)
         return jsonify({"message": "Expense saved", "id": str(result.inserted_id)}), 201
     except Exception as e:
         print(f"Add expense error: {e}")
@@ -1351,7 +1391,7 @@ def delete_expense(id):
     if not check_db():
         return jsonify({"error": "Database error"}), 500
     try:
-        result = mongo.db.expenses.delete_one({'_id': ObjectId(id)})
+        result = get_db().expenses.delete_one({'_id': ObjectId(id)})
         if result.deleted_count:
             return jsonify({"message": "Expense deleted"})
         return jsonify({"error": "Expense not found"}), 404
@@ -1373,7 +1413,7 @@ def expenses_summary():
             {'$match': {'date': {'$gte': start_of_month}}},
             {'$group': {'_id': '$type', 'total': {'$sum': '$amount'}}}
         ]
-        summary_data = list(mongo.db.expenses.aggregate(pipeline))
+        summary_data = list(get_db().expenses.aggregate(pipeline))
         incoming = 0
         outgoing = 0
         for item in summary_data:
@@ -1408,7 +1448,7 @@ def export_patients():
         is_admin = current_user.get('role') == 'Admin'
         print(f"Export request from user: {current_user.get('username')}, is_admin: {is_admin}")
         
-        cursor = mongo.db.patients.find()
+        cursor = get_db().patients.find()
         patients_list = list(cursor)
         print(f"Found {len(patients_list)} patients")
         
@@ -1496,7 +1536,7 @@ def get_accounts_summary():
         from datetime import datetime
         
         # Get all patients - Added 'isDischarged' to projection
-        patients = list(mongo.db.patients.find({}, {
+        patients = list(get_db().patients.find({}, {
             'name': 1, 'fatherName': 1, 'admissionDate': 1, 
             'monthlyFee': 1, 'address': 1, 'age': 1,
             'laundryStatus': 1, 'laundryAmount': 1, 'receivedAmount': 1,
@@ -1507,7 +1547,7 @@ def get_accounts_summary():
         pipeline = [
             {'$group': {'_id': '$patient_id', 'total_sales': {'$sum': '$amount'}}}
         ]
-        sales_data = list(mongo.db.canteen_sales.aggregate(pipeline))
+        sales_data = list(get_db().canteen_sales.aggregate(pipeline))
         sales_map = {str(s['_id']): s['total_sales'] for s in sales_data}
 
         summary = []
@@ -1568,7 +1608,7 @@ def get_call_meeting_data():
         month = int(request.args.get('month', today.month))
         
         # Fetch all records for the current month
-        records_cursor = mongo.db.call_meeting_tracker.find({
+        records_cursor = get_db().call_meeting_tracker.find({
             'year': year,
             'month': month
         }).sort('day', 1)
@@ -1612,7 +1652,7 @@ def add_call_meeting_entry():
         }
         
         # Check if entry already exists for this person on this day/month/year
-        existing = mongo.db.call_meeting_tracker.find_one({
+        existing = get_db().call_meeting_tracker.find_one({
             'name': data['name'],
             'day': int(data['day']),
             'month': int(data['month']),
@@ -1621,11 +1661,11 @@ def add_call_meeting_entry():
         
         if existing:
             # Update existing entry
-            mongo.db.call_meeting_tracker.update_one({'_id': existing['_id']}, {'$set': entry})
+            get_db().call_meeting_tracker.update_one({'_id': existing['_id']}, {'$set': entry})
             return jsonify({"message": "Entry updated", "id": str(existing['_id'])}), 200
         else:
             # Create new entry
-            result = mongo.db.call_meeting_tracker.insert_one(entry)
+            result = get_db().call_meeting_tracker.insert_one(entry)
             return jsonify({"message": "Entry added", "id": str(result.inserted_id)}), 201
     except Exception as e:
         print(f"Call/Meeting Add Error: {e}")
@@ -1638,7 +1678,7 @@ def delete_call_meeting_entry(id):
     if not check_db(): return jsonify({"error": "Database error"}), 500
     
     try:
-        result = mongo.db.call_meeting_tracker.delete_one({'_id': ObjectId(id)})
+        result = get_db().call_meeting_tracker.delete_one({'_id': ObjectId(id)})
         if result.deleted_count > 0:
             return jsonify({"message": "Entry deleted"}), 200
         else:
@@ -1655,7 +1695,7 @@ def get_call_meeting_summary(month, year):
     
     try:
         # Get all records for the month
-        records_cursor = mongo.db.call_meeting_tracker.find({
+        records_cursor = get_db().call_meeting_tracker.find({
             'year': year,
             'month': month
         })
@@ -1696,7 +1736,7 @@ def get_utility_bills():
     if not check_db(): return jsonify({"error": "Database error"}), 500
     try:
         # Fetch all bills sorted by due date (soonest first)
-        cursor = mongo.db.utility_bills.find().sort('due_date', 1)
+        cursor = get_db().utility_bills.find().sort('due_date', 1)
         bills = []
         for b in cursor:
             bills.append({
@@ -1727,7 +1767,7 @@ def add_utility_bill():
             'ref_no': data.get('ref_no', ''),
             'created_at': datetime.now()
         }
-        result = mongo.db.utility_bills.insert_one(bill)
+        result = get_db().utility_bills.insert_one(bill)
         return jsonify({"message": "Bill added", "id": str(result.inserted_id)}), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1738,10 +1778,10 @@ def pay_utility_bill(id):
     if not check_db(): return jsonify({"error": "Database error"}), 500
     try:
         # OPTIONAL: When deleting/paying, record it as an expense automatically
-        bill = mongo.db.utility_bills.find_one({'_id': ObjectId(id)})
+        bill = get_db().utility_bills.find_one({'_id': ObjectId(id)})
         if bill:
             # Add to expenses
-            mongo.db.expenses.insert_one({
+            get_db().expenses.insert_one({
                 'type': 'outgoing',
                 'amount': bill['amount'],
                 'category': 'Utility Bill',
@@ -1752,7 +1792,7 @@ def pay_utility_bill(id):
             })
             
         # Remove from bills collection
-        mongo.db.utility_bills.delete_one({'_id': ObjectId(id)})
+        get_db().utility_bills.delete_one({'_id': ObjectId(id)})
         return jsonify({"message": "Bill paid and removed"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1765,7 +1805,7 @@ def get_employees():
     if not check_db(): return jsonify({"error": "Database error"}), 500
     try:
         # Sort by name alphabetically
-        cursor = mongo.db.employees.find().sort('name', 1)
+        cursor = get_db().employees.find().sort('name', 1)
         employees = []
         for e in cursor:
             employees.append({
@@ -1801,7 +1841,7 @@ def add_employee():
             'phone': data.get('phone', ''),
             'created_at': datetime.now()
         }
-        result = mongo.db.employees.insert_one(employee)
+        result = get_db().employees.insert_one(employee)
         return jsonify({"message": "Employee added", "id": str(result.inserted_id)}), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1814,7 +1854,7 @@ def update_employee(id):
     # Remove _id from data if present to avoid immutable field error
     if '_id' in data: del data['_id']
     try:
-        mongo.db.employees.update_one({'_id': ObjectId(id)}, {'$set': data})
+        get_db().employees.update_one({'_id': ObjectId(id)}, {'$set': data})
         return jsonify({"message": "Employee updated"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1824,7 +1864,7 @@ def update_employee(id):
 def delete_employee(id):
     if not check_db(): return jsonify({"error": "Database error"}), 500
     try:
-        mongo.db.employees.delete_one({'_id': ObjectId(id)})
+        get_db().employees.delete_one({'_id': ObjectId(id)})
         return jsonify({"message": "Employee deleted"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1837,7 +1877,7 @@ def get_payment_records():
     if not check_db(): return jsonify({"error": "Database error"}), 500
     try:
         # Fetch all incoming payments from Patient Fee category
-        payments = list(mongo.db.expenses.find({
+        payments = list(get_db().expenses.find({
             'type': 'incoming',
             'category': 'Patient Fee'
         }).sort('date', -1))  # Most recent first
@@ -1881,7 +1921,7 @@ def get_overheads(month, year):
     if not check_db(): return jsonify({"error": "Database error"}), 500
     try:
         # Fetch stored overhead entries for this month
-        overheads = list(mongo.db.overheads.find({
+        overheads = list(get_db().overheads.find({
             'month': month,
             'year': year
         }))
@@ -1910,7 +1950,7 @@ def get_overheads(month, year):
         else:
             end_date = datetime(year, month + 1, 1)
         
-        canteen_aggregation = mongo.db.canteen_sales.aggregate([
+        canteen_aggregation = get_db().canteen_sales.aggregate([
             {
                 '$match': {
                     'date': {
@@ -1964,7 +2004,7 @@ def get_overheads_annual(year):
         start_date = datetime(year, 1, 1)
         end_date = datetime(year + 1, 1, 1)
         
-        canteen_aggregation = mongo.db.canteen_sales.aggregate([
+        canteen_aggregation = get_db().canteen_sales.aggregate([
             {
                 '$match': {
                     'date': {
@@ -1985,7 +2025,7 @@ def get_overheads_annual(year):
         total_canteen = canteen_result[0]['total_canteen'] if canteen_result else 0
         
         # Aggregate overhead entries
-        entries = list(mongo.db.overheads.find({'year': year}))
+        entries = list(get_db().overheads.find({'year': year}))
 
         total_income = 0.0
         total_other_expense = 0.0
@@ -2055,7 +2095,7 @@ def save_overhead_entry():
         }
         
         # Upsert: update if exists, insert if not
-        mongo.db.overheads.update_one(
+        get_db().overheads.update_one(
             {'date': date, 'month': month, 'year': year},
             {'$set': entry},
             upsert=True
@@ -2082,7 +2122,7 @@ def sync_overheads_canteen(month, year):
         else:
             end_date = datetime(year, month + 1, 1)
         
-        canteen_aggregation = mongo.db.canteen_sales.aggregate([
+        canteen_aggregation = get_db().canteen_sales.aggregate([
             {
                 '$match': {
                     'date': {
@@ -2146,7 +2186,7 @@ def export_payment_records():
         end_date = datetime(today.year, today.month + 1, 1)
 
     try:
-        payments = list(mongo.db.expenses.find({
+        payments = list(get_db().expenses.find({
             'type': 'incoming',
             'category': 'Patient Fee',
             'date': {'$gte': start_date, '$lt': end_date}
@@ -2220,7 +2260,7 @@ def add_patient_payment(id):
         payment_method = data.get('payment_method', 'Cash') # Cash or Online
         screenshot = data.get('screenshot', '') # Base64 string if Online
         
-        patient = mongo.db.patients.find_one({'_id': ObjectId(id)})
+        patient = get_db().patients.find_one({'_id': ObjectId(id)})
         if not patient:
             return jsonify({"error": "Patient not found"}), 404
 
@@ -2235,14 +2275,14 @@ def add_patient_payment(id):
         new_total = current_received + amount_paid
 
         # 3. Update Patient Record
-        mongo.db.patients.update_one(
+        get_db().patients.update_one(
             {'_id': ObjectId(id)}, 
             {'$set': {'receivedAmount': str(new_total)}}
         )
 
         # 4. Log as an Incoming Expense automatically
         expense_note = f"Partial payment from {patient.get('name')} via {payment_method}"
-        mongo.db.expenses.insert_one({
+        get_db().expenses.insert_one({
             'type': 'incoming',
             'amount': amount_paid,
             'category': 'Patient Fee',
@@ -2271,7 +2311,7 @@ def generate_discharge_bill(id):
         from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
         
         # Fetch patient data
-        patient = mongo.db.patients.find_one({'_id': ObjectId(id)})
+        patient = get_db().patients.find_one({'_id': ObjectId(id)})
         if not patient:
             return jsonify({"error": "Patient not found"}), 404
         
@@ -2294,7 +2334,7 @@ def generate_discharge_bill(id):
             {'$match': {'patient_id': ObjectId(id)}},
             {'$group': {'_id': None, 'total_sales': {'$sum': '$amount'}}}
         ]
-        canteen_result = list(mongo.db.canteen_sales.aggregate(pipeline))
+        canteen_result = list(get_db().canteen_sales.aggregate(pipeline))
         canteen_total = canteen_result[0]['total_sales'] if canteen_result else 0
         
         # Parse financial data and calculate prorated fee
@@ -2425,7 +2465,7 @@ def get_daily_report():
         
     try:
         # Fetch all report entries for this specific date
-        reports = list(mongo.db.daily_reports.find({'date': date_str}))
+        reports = list(get_db().daily_reports.find({'date': date_str}))
         
         # Convert ObjectId to string
         for r in reports:
@@ -2461,7 +2501,7 @@ def update_daily_report():
             }
         }
         
-        mongo.db.daily_reports.update_one(query, update, upsert=True)
+        get_db().daily_reports.update_one(query, update, upsert=True)
         return jsonify({"message": "Status updated"}), 200
         
     except Exception as e:
@@ -2475,7 +2515,7 @@ def update_daily_report():
 def get_report_config():
     if not check_db(): return jsonify({})
     # Return saved config or empty (frontend handles defaults)
-    config = mongo.db.report_config.find_one({'_id': 'main_config'})
+    config = get_db().report_config.find_one({'_id': 'main_config'})
     if config:
         return jsonify(config)
     return jsonify({})
@@ -2487,7 +2527,7 @@ def save_report_config():
     data = clean_input_data(request.json)
     try:
         # Save day_columns and night_columns
-        mongo.db.report_config.update_one(
+        get_db().report_config.update_one(
             {'_id': 'main_config'},
             {'$set': {
                 'day_columns': data.get('day_columns'),
@@ -2541,7 +2581,7 @@ def list_psych_sessions():
         query['psychologist_id'] = psychologist_id
 
     try:
-        sessions_cursor = mongo.db.psych_sessions.find(query).sort('date', 1)
+        sessions_cursor = get_db().psych_sessions.find(query).sort('date', 1)
         sessions = list(sessions_cursor)
 
         # collect ids for enrichment
@@ -2555,13 +2595,13 @@ def list_psych_sessions():
 
         patient_map = {}
         if patient_ids:
-            patients = mongo.db.patients.find({"_id": {"$in": [ObjectId(pid) for pid in patient_ids if ObjectId.is_valid(pid)]}})
+            patients = get_db().patients.find({"_id": {"$in": [ObjectId(pid) for pid in patient_ids if ObjectId.is_valid(pid)]}})
             for p in patients:
                 patient_map[str(p['_id'])] = p.get('name', 'Unknown')
 
         psych_map = {}
         if psych_ids:
-            users = mongo.db.users.find({"_id": {"$in": [ObjectId(pid) for pid in psych_ids if ObjectId.is_valid(pid)]}})
+            users = get_db().users.find({"_id": {"$in": [ObjectId(pid) for pid in psych_ids if ObjectId.is_valid(pid)]}})
             for u in users:
                 psych_map[str(u['_id'])] = u.get('name', u.get('username', 'Psych'))
 
@@ -2622,7 +2662,7 @@ def create_psych_session():
             'created_at': datetime.now()
         }
 
-        res = mongo.db.psych_sessions.insert_one(doc)
+        res = get_db().psych_sessions.insert_one(doc)
         return jsonify({"message": "Session created", "id": str(res.inserted_id)})
     except Exception as e:
         print(f"Psych session create error: {e}")
@@ -2650,14 +2690,14 @@ def add_psych_session_note(session_id):
         note_text = f"Issue: {note_issue}\nIntervention: {note_intervention}\nResponse: {note_response}"
 
     try:
-        session_doc = mongo.db.psych_sessions.find_one({'_id': ObjectId(session_id)})
+        session_doc = get_db().psych_sessions.find_one({'_id': ObjectId(session_id)})
         if not session_doc:
             return jsonify({"error": "Session not found"}), 404
 
         if session_doc.get('note'):
             return jsonify({"error": "Note already saved"}), 409
 
-        mongo.db.psych_sessions.update_one(
+        get_db().psych_sessions.update_one(
             {'_id': ObjectId(session_id)},
             {'$set': {
                 'note': note_text,
@@ -2681,7 +2721,7 @@ def get_attendance():
     year = int(request.args.get('year'))
     month = int(request.args.get('month'))
 
-    records = mongo.db.attendance.find({
+    records = get_db().attendance.find({
         "year": year,
         "month": month
     })
@@ -2710,13 +2750,13 @@ def save_attendance():
     }
 
     if mark == '':
-        mongo.db.attendance.update_one(
+        get_db().attendance.update_one(
             query,
             { "$unset": { f"days.{day}": "" } },
             upsert=True
         )
     else:
-        mongo.db.attendance.update_one(
+        get_db().attendance.update_one(
             query,
             { "$set": { f"days.{day}": mark } },
             upsert=True
@@ -2730,7 +2770,7 @@ def save_attendance():
 def get_emergency_alerts():
     if not check_db(): return jsonify({"error": "Database error"}), 500
     try:
-        alerts = list(mongo.db.emergency_alerts.find().sort('created_at', -1))
+        alerts = list(get_db().emergency_alerts.find().sort('created_at', -1))
         for a in alerts:
             a['_id'] = str(a['_id'])
             # Format: 12 Oct, 04:30 PM
@@ -2755,7 +2795,7 @@ def add_emergency_alert():
             'added_by': session.get('username', 'Staff'),
             'created_at': datetime.now()
         }
-        mongo.db.emergency_alerts.insert_one(alert)
+        get_db().emergency_alerts.insert_one(alert)
         return jsonify({"message": "Alert added"}), 201
     except Exception as e:
         print(f"Emergency Save Error: {e}") # Added debug print
@@ -2766,7 +2806,7 @@ def add_emergency_alert():
 def delete_emergency_alert(id):
     if not check_db(): return jsonify({"error": "Database error"}), 500
     try:
-        mongo.db.emergency_alerts.delete_one({'_id': ObjectId(id)})
+        get_db().emergency_alerts.delete_one({'_id': ObjectId(id)})
         return jsonify({"message": "Alert resolved"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -2777,7 +2817,7 @@ def get_patient_payment_history(id):
     if not check_db(): return jsonify({"error": "Database error"}), 500
     try:
         # 1. Get Patient Details to find the name
-        patient = mongo.db.patients.find_one({'_id': ObjectId(id)})
+        patient = get_db().patients.find_one({'_id': ObjectId(id)})
         if not patient:
             return jsonify([])
 
@@ -2786,7 +2826,7 @@ def get_patient_payment_history(id):
         
         # 2. Fetch ALL "Patient Fee" expenses (Incoming only)
         # We fetch all candidates first, then filter in Python for 100% accuracy matching your other API
-        cursor = mongo.db.expenses.find({
+        cursor = get_db().expenses.find({
             'type': 'incoming',
             'category': 'Patient Fee'
         }).sort('date', 1)
@@ -2837,7 +2877,7 @@ def get_patient_payment_history(id):
 def get_old_balances():
     if not check_db(): return jsonify({"error": "Database error"}), 500
     try:
-        cursor = mongo.db.old_balances.find().sort('created_at', -1)
+        cursor = get_db().old_balances.find().sort('created_at', -1)
         balances = []
         for b in cursor:
             balances.append({
@@ -2868,7 +2908,7 @@ def add_old_balance():
             'created_at': datetime.now(),
             'added_by': session.get('username')
         }
-        result = mongo.db.old_balances.insert_one(record)
+        result = get_db().old_balances.insert_one(record)
         return jsonify({"message": "Record added", "id": str(result.inserted_id)}), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -2878,7 +2918,7 @@ def add_old_balance():
 def delete_old_balance(id):
     if not check_db(): return jsonify({"error": "Database error"}), 500
     try:
-        mongo.db.old_balances.delete_one({'_id': ObjectId(id)})
+        get_db().old_balances.delete_one({'_id': ObjectId(id)})
         return jsonify({"message": "Record deleted"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
