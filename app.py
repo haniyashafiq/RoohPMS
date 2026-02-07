@@ -82,54 +82,77 @@ def check_db():
 
 def ensure_initial_admin():
     """Checks for and creates the default admin users on first run."""
-    try:
-        if check_db():
-            database = get_db()
+    if check_db():
+        database = get_db()
+        if database.users.count_documents({}) == 0:
+            # Create Admin 1 - Mudasir
+            admin1_user = {
+                'username': os.environ.get('ADMIN1_USERNAME', 'mudasir'),
+                'password': generate_password_hash(os.environ.get('ADMIN1_PASSWORD', 'password123')),
+                'role': 'Admin',
+                'name': os.environ.get('ADMIN1_NAME', 'Mudasir'),
+                'email': f"{os.environ.get('ADMIN1_USERNAME', 'mudasir')}@example.com",
+                'created_at': datetime.now()
+            }
+            database.users.insert_one(admin1_user)
+            print(f"Initial Admin user '{admin1_user['username']}' created.")
             
-            # Create or update Admin 1 (Mudasir)
-            admin1_username = os.environ.get("ADMIN1_USERNAME", "mudasir")
-            if not database.users.find_one({"username": admin1_username}):
-                admin1 = {
-                    'username': admin1_username,
-                    'password': generate_password_hash(os.environ.get("ADMIN1_PASSWORD", "password123")),
-                    'role': 'Admin',
-                    'name': os.environ.get("ADMIN1_NAME", "Mudasir"),
-                    'created_at': datetime.now()
-                }
-                database.users.insert_one(admin1)
-                print(f"Admin user '{admin1['username']}' created.")
-            else:
-                database.users.update_one(
-                    {"username": admin1_username},
-                    {"$set": {"name": os.environ.get("ADMIN1_NAME", "Mudasir")}}
-                )
-            
-            # Create or update Admin 2 (Tayyab)
-            admin2_username = os.environ.get("ADMIN2_USERNAME", "tayyab")
-            if not database.users.find_one({"username": admin2_username}):
-                admin2 = {
-                    'username': admin2_username,
-                    'password': generate_password_hash(os.environ.get("ADMIN2_PASSWORD", "password123")),
-                    'role': 'Admin',
-                    'name': os.environ.get("ADMIN2_NAME", "Tayyab"),
-                    'created_at': datetime.now()
-                }
-                database.users.insert_one(admin2)
-                print(f"Admin user '{admin2['username']}' created.")
-            else:
-                database.users.update_one(
-                    {"username": admin2_username},
-                    {"$set": {"name": os.environ.get("ADMIN2_NAME", "Tayyab")}}
-                )
-    except Exception as e:
-        print(f"Error in ensure_initial_admin: {e}")
+            # Create Admin 2 - Tayyab
+            admin2_user = {
+                'username': os.environ.get('ADMIN2_USERNAME', 'tayyab'),
+                'password': generate_password_hash(os.environ.get('ADMIN2_PASSWORD', 'password123')),
+                'role': 'Admin',
+                'name': os.environ.get('ADMIN2_NAME', 'Tayyab'),
+                'email': f"{os.environ.get('ADMIN2_USERNAME', 'tayyab')}@example.com",
+                'created_at': datetime.now()
+            }
+            database.users.insert_one(admin2_user)
+            print(f"Initial Admin user '{admin2_user['username']}' created.")
 
-# Run initial setup outside of request context (safe for serverless)
-try:
-    with app.app_context():
-        ensure_initial_admin()
-except Exception as e:
-    print(f"Initial admin setup skipped: {e}")
+# Run initial setup outside of request context
+with app.app_context():
+    ensure_initial_admin()
+
+
+def normalize_email(value):
+    return value.strip().lower() if isinstance(value, str) else value
+
+
+def send_password_reset_email(to_email, username, token):
+    """Send a password reset email using Gmail SMTP credentials."""
+    gmail_user = app.config.get("GMAIL_USER")
+    gmail_pass = app.config.get("GMAIL_APP_PASSWORD")
+
+    if not gmail_user or not gmail_pass:
+        print("Gmail credentials missing; cannot send password reset email.")
+        return False
+
+    base_url = url_for('index', _external=True)
+    connector = '&' if '?' in base_url else '?'
+    reset_link = f"{base_url}{connector}reset_token={token}"
+    expires_in = app.config.get("PASSWORD_RESET_EXPIRY_MINUTES", 30)
+
+    message = EmailMessage()
+    message["Subject"] = "Reset your Rooh account password"
+    message["From"] = gmail_user
+    message["To"] = to_email
+    message.set_content(
+        f"Hello {username},\n\n"
+        "We received a request to reset your password. "
+        f"Use the link below to set a new password (valid for {expires_in} minutes).\n\n"
+        f"{reset_link}\n\n"
+        "If you did not request this, you can safely ignore this email."
+    )
+
+    try:
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+            server.login(gmail_user, gmail_pass)
+            server.send_message(message)
+        return True
+    except Exception as e:
+        print(f"Failed to send reset email: {e}")
+        return False
 
 
 # --- AUTHENTICATION ROUTES ---
