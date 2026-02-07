@@ -3,40 +3,23 @@ from flask_pymongo import PyMongo
 from bson.objectid import ObjectId
 from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
-from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
-from email.message import EmailMessage
-import smtplib
-import ssl
 import os
 import pandas as pd
 import io
-from dotenv import load_dotenv 
-
-load_dotenv()
+from dotenv import load_dotenv  # 1. Add this import
 
 app = Flask(__name__)
 
 # --- CONFIGURATION ---
-mongo_uri = os.environ.get("MONGO_URI")
-if not mongo_uri:
-    raise ValueError("MONGO_URI environment variable is required")
+mongo_uri = os.environ.get("MONGO_URI", "mongodb+srv://taha_admin:hospital123@cluster0.ukoxtzf.mongodb.net/hospital_crm_db?retryWrites=true&w=majority&appName=Cluster0&authSource=admin")
 app.config["MONGO_URI"] = mongo_uri
-
-secret_key = os.environ.get("SECRET_KEY")
-if not secret_key:
-    raise ValueError("SECRET_KEY environment variable is required")
-app.config["SECRET_KEY"] = secret_key
-app.config["GMAIL_USER"] = os.environ.get("GMAIL_USER")
-app.config["GMAIL_APP_PASSWORD"] = os.environ.get("GMAIL_APP_PASSWORD")
-app.config["PASSWORD_RESET_EXPIRY_MINUTES"] = int(os.environ.get("PASSWORD_RESET_EXPIRY_MINUTES", "30"))
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "a_very_secret_key_for_hms_pro")
 
 try:
     mongo = PyMongo(app)
 except Exception as e:
     print(f"Error initializing MongoDB: {e}")
     mongo = None
-
-serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"])
 
 # --- HELPER: DATABASE CHECK & INITIAL SETUP ---
 def check_db():
@@ -63,77 +46,23 @@ def clean_input_data(data):
     return cleaned
 
 def ensure_initial_admin():
-    """Checks for and creates the default admin users on first run."""
+    """Checks for and creates the default admin user 'ImranSaab' on first run."""
     if check_db():
         if mongo.db.users.count_documents({}) == 0:
-            # Create Admin 1 - Mudasir
-            admin1_user = {
-                'username': os.environ.get('ADMIN1_USERNAME', 'mudasir'),
-                'password': generate_password_hash(os.environ.get('ADMIN1_PASSWORD', 'password123')),
+            # Create ImranSaab as the Admin
+            admin_user = {
+                'username': 'ImranSaab',
+                'password': generate_password_hash('password123'),
                 'role': 'Admin',
-                'name': os.environ.get('ADMIN1_NAME', 'Mudasir'),
-                'email': f"{os.environ.get('ADMIN1_USERNAME', 'mudasir')}@example.com",
+                'name': 'Imran Khan (Admin)',
                 'created_at': datetime.now()
             }
-            mongo.db.users.insert_one(admin1_user)
-            print(f"Initial Admin user '{admin1_user['username']}' created.")
-            
-            # Create Admin 2 - Tayyab
-            admin2_user = {
-                'username': os.environ.get('ADMIN2_USERNAME', 'tayyab'),
-                'password': generate_password_hash(os.environ.get('ADMIN2_PASSWORD', 'password123')),
-                'role': 'Admin',
-                'name': os.environ.get('ADMIN2_NAME', 'Tayyab'),
-                'email': f"{os.environ.get('ADMIN2_USERNAME', 'tayyab')}@example.com",
-                'created_at': datetime.now()
-            }
-            mongo.db.users.insert_one(admin2_user)
-            print(f"Initial Admin user '{admin2_user['username']}' created.")
+            mongo.db.users.insert_one(admin_user)
+            print("Initial Admin user 'ImranSaab' created.")
 
 # Run initial setup outside of request context
 with app.app_context():
     ensure_initial_admin()
-
-
-def normalize_email(value):
-    return value.strip().lower() if isinstance(value, str) else value
-
-
-def send_password_reset_email(to_email, username, token):
-    """Send a password reset email using Gmail SMTP credentials."""
-    gmail_user = app.config.get("GMAIL_USER")
-    gmail_pass = app.config.get("GMAIL_APP_PASSWORD")
-
-    if not gmail_user or not gmail_pass:
-        print("Gmail credentials missing; cannot send password reset email.")
-        return False
-
-    base_url = url_for('index', _external=True)
-    connector = '&' if '?' in base_url else '?'
-    reset_link = f"{base_url}{connector}reset_token={token}"
-    expires_in = app.config.get("PASSWORD_RESET_EXPIRY_MINUTES", 30)
-
-    message = EmailMessage()
-    message["Subject"] = "Reset your Rooh account password"
-    message["From"] = gmail_user
-    message["To"] = to_email
-    message.set_content(
-        f"Hello {username},\n\n"
-        "We received a request to reset your password. "
-        f"Use the link below to set a new password (valid for {expires_in} minutes).\n\n"
-        f"{reset_link}\n\n"
-        "If you did not request this, you can safely ignore this email."
-    )
-
-    try:
-        context = ssl.create_default_context()
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
-            server.login(gmail_user, gmail_pass)
-            server.send_message(message)
-        return True
-    except Exception as e:
-        print(f"Failed to send reset email: {e}")
-        return False
 
 
 # --- AUTHENTICATION ROUTES ---
@@ -158,74 +87,6 @@ def role_required(roles):
         return wrapper
     return decorator
 
-def calculate_prorated_fee(monthly_fee, days_elapsed):
-    """
-    Calculate prorated fee based on days elapsed.
-    If days > 90, calculate as (monthly_fee / 30) * days_elapsed.
-    Otherwise, return the flat monthly_fee.
-    
-    This ensures:
-    - First 90 days: Patient pays fixed monthly fee regardless of exact days
-    - After 90 days: Fee is prorated based on actual days stayed
-    - This prevents overcharging for long-term patients
-    """
-    try:
-        # Parse monthly_fee to handle string values with commas
-        if isinstance(monthly_fee, str):
-            monthly_fee = int(monthly_fee.replace(',', '') or '0')
-        else:
-            monthly_fee = int(monthly_fee or 0)
-        
-        if days_elapsed > 90:
-            # Per-day rate multiplied by actual days elapsed
-            per_day_rate = monthly_fee / 30.0
-            return int(per_day_rate * days_elapsed)
-        else:
-            # Within first 90 days, use flat monthly fee
-            return monthly_fee
-    except (ValueError, TypeError):
-        return 0
-
-
-# ============================================================
-# FINANCIAL SYSTEM LOGIC OVERVIEW:
-# ============================================================
-# 
-# The system tracks patient finances through multiple components:
-#
-# 1. PATIENT CHARGES (Calculated):
-#    - Monthly Fee: Stored per patient, prorated after 90 days
-#    - Canteen Sales: Aggregated from canteen_sales collection
-#    - Laundry: One-time charge added at discharge (if laundryStatus=True)
-#    
-# 2. PAYMENTS (Tracked):
-#    - receivedAmount: Cumulative payments stored in patient record
-#    - Payment History: Individual payments logged in expenses collection
-#      (type='incoming', category='Patient Fee', auto=True)
-#
-# 3. BALANCE CALCULATION:
-#    Balance Due = (Fee + Canteen + Laundry) - Received Amount
-#
-# 4. DASHBOARD METRICS:
-#    - Total Expected Balance: Sum of all positive balances from active patients
-#    - This shows total money owed to the facility
-#
-# 5. EXPENSES TRACKING:
-#    - Manual Income: Recorded in expenses (type='incoming')  
-#    - Manual Outgoing: Recorded in expenses (type='outgoing')
-#    - Patient payments are auto-recorded but NOT double-counted in summaries
-#
-# 6. OVERHEADS TRACKING:
-#    - Monthly daily expense tracking (kitchen, canteen, others, advances, income)
-#    - Canteen column auto-syncs with canteen_sales collection
-#    - Shows daily profit/loss calculations
-#
-# 7. DATA CONSISTENCY:
-#    - Canteen totals: Aggregated from canteen_sales using patient_id
-#    - Payments: receivedAmount must match sum of payment history
-#    - All financial fields stored as strings with commas, parsed as integers
-# ============================================================
-
 @app.route('/')
 def index():
     # Frontend handles redirection to login if session is missing.
@@ -249,80 +110,6 @@ def login():
             "user_id": str(user['_id'])
         })
     return jsonify({"error": "Invalid credentials"}), 401
-
-
-@app.route('/api/auth/forgot', methods=['POST'])
-def forgot_password():
-    """Initiate password reset by emailing a time-bound token."""
-    if not check_db():
-        return jsonify({"error": "Database error"}), 500
-
-    data = clean_input_data(request.json or {})
-    username = data.get('username')
-    email = normalize_email(data.get('email'))
-
-    if not username or not email:
-        return jsonify({"error": "Username and email are required"}), 400
-
-    if not app.config.get("GMAIL_USER") or not app.config.get("GMAIL_APP_PASSWORD"):
-        return jsonify({"error": "Email service not configured"}), 500
-
-    user = mongo.db.users.find_one({"username": username})
-    if not user:
-        return jsonify({"error": "No account found for that username."}), 404
-
-    registered_email = normalize_email(user.get('email'))
-    if not registered_email:
-        return jsonify({"error": "No email is set for this account. Contact an admin."}), 400
-
-    if registered_email != email:
-        return jsonify({"error": "Username and email do not match our records."}), 400
-
-    token = serializer.dumps({"user_id": str(user['_id']), "email": registered_email}, salt="password-reset")
-    sent = send_password_reset_email(registered_email, user.get('name', user['username']), token)
-    if not sent:
-        return jsonify({"error": "Could not send reset email. Please try again or contact support."}), 500
-
-    return jsonify({"message": "Reset email sent to your registered address."})
-
-
-@app.route('/api/auth/reset', methods=['POST'])
-def reset_password():
-    """Reset password using a token delivered via email."""
-    if not check_db():
-        return jsonify({"error": "Database error"}), 500
-
-    data = clean_input_data(request.json or {})
-    token = data.get('token')
-    new_password = data.get('new_password')
-
-    if not token or not new_password:
-        return jsonify({"error": "Token and new password are required"}), 400
-
-    try:
-        payload = serializer.loads(
-            token,
-            salt="password-reset",
-            max_age=app.config.get("PASSWORD_RESET_EXPIRY_MINUTES", 30) * 60
-        )
-    except SignatureExpired:
-        return jsonify({"error": "Reset link expired"}), 400
-    except BadSignature:
-        return jsonify({"error": "Invalid reset token"}), 400
-
-    user_id = payload.get('user_id')
-    email = normalize_email(payload.get('email'))
-    if not user_id:
-        return jsonify({"error": "Invalid reset token"}), 400
-
-    user = mongo.db.users.find_one({"_id": ObjectId(user_id)})
-    if not user or (email and normalize_email(user.get('email')) != email):
-        return jsonify({"error": "Invalid reset token"}), 400
-
-    new_password_hash = generate_password_hash(new_password)
-    mongo.db.users.update_one({'_id': ObjectId(user_id)}, {'$set': {'password': new_password_hash}})
-
-    return jsonify({"message": "Password has been reset successfully"})
 
 @app.route('/api/auth/logout', methods=['POST'])
 def logout():
@@ -356,18 +143,11 @@ def get_users():
 def create_user():
     if not check_db(): return jsonify({"error": "Database error"}), 500
     data = clean_input_data(request.json)
-    if not all(k in data for k in ['username', 'password', 'role', 'name', 'email']):
+    if not all(k in data for k in ['username', 'password', 'role', 'name']):
         return jsonify({"error": "Missing fields"}), 400
-
-    data['email'] = normalize_email(data.get('email'))
-    if not data['email']:
-        return jsonify({"error": "Valid email required"}), 400
     
     if mongo.db.users.find_one({"username": data['username']}):
         return jsonify({"error": "Username already exists"}), 409
-
-    if mongo.db.users.find_one({"email": data['email']}):
-        return jsonify({"error": "Email already exists"}), 409
 
     data['password'] = generate_password_hash(data['password'])
     data['created_at'] = datetime.now()
@@ -425,7 +205,7 @@ def get_dashboard_metrics():
         # 1. Basic Counts
         total_patients = mongo.db.patients.count_documents({})
         admissions_this_month = mongo.db.patients.count_documents({
-            'admissionDate': {'$gte': start_of_month.isoformat(), '$lt': end_of_month.isoformat()}
+            'created_at': {'$gte': start_of_month, '$lt': end_of_month}
         })
         discharges_this_month = mongo.db.patients.count_documents({
             'isDischarged': True,
@@ -448,47 +228,39 @@ def get_dashboard_metrics():
         # Fetch Active Patients
         active_patients = list(mongo.db.patients.find({'isDischarged': {'$ne': True}}))
         
-        total_expected_balance = 0
+        total_income_this_month = 0
         
-        # Calculate total expected balance from active patients (fee + canteen + laundry - received)
-        for patient in active_patients:
+        print("\n--- DEBUGGING OVERHEAD CALCULATION ---")
+        for p in active_patients:
             try:
-                pid = str(patient['_id'])
+                pid = str(p['_id'])
+                name = p.get('name', 'Unknown')
                 
-                # Calculate days elapsed for prorated fee
-                admission_date = patient.get('admissionDate')
-                days_elapsed = 0
-                if admission_date:
-                    try:
-                        if isinstance(admission_date, str):
-                            admission_dt = datetime.fromisoformat(admission_date.replace('Z', '+00:00'))
-                        else:
-                            admission_dt = admission_date
-                        days_diff = (datetime.now() - admission_dt).days
-                        days_elapsed = max(0, days_diff)
-                    except:
-                        pass
-                
-                # Get prorated fee
-                fee_str = patient.get('monthlyFee', '0') or '0'
-                fee = calculate_prorated_fee(fee_str, days_elapsed)
-                
-                # Get canteen total
+                # Helper to safely parse currency strings like "15,000" or ints like 15000
+                def safe_int(val):
+                    if val is None: return 0
+                    return int(str(val).replace(',', '').strip() or 0)
+
+                fee = safe_int(p.get('monthlyFee'))
+                laundry = safe_int(p.get('laundryAmount'))
+                received = safe_int(p.get('receivedAmount'))
                 canteen = canteen_map.get(pid, 0)
                 
-                # Get laundry (one-time charge for discharge)
-                laundry = patient.get('laundryAmount', 0) if patient.get('laundryStatus', False) else 0
+                total_bill = fee + laundry + canteen
+                balance = total_bill - received
                 
-                # Get received amount
-                received_str = str(patient.get('receivedAmount', '0')).replace(',', '')
-                received = int(received_str or '0')
-                
-                # Calculate remaining balance
-                balance = fee + canteen + laundry - received
-                total_expected_balance += max(0, balance)  # Only count positive balances
-            except (ValueError, TypeError) as e:
-                print(f"Dashboard calculation error for patient {patient.get('name')}: {e}")
-                pass
+                # Only count positive balances (money they owe us)
+                if balance > 0:
+                    total_income_this_month += balance
+                    print(f"Patient: {name} | Fee: {fee} + Lnd: {laundry} + Cant: {canteen} - Rec: {received} = Bal: {balance}")
+                else:
+                    print(f"Patient: {name} | Balance is 0 or negative ({balance}) - Ignoring")
+
+            except Exception as e:
+                print(f"Error calculating for {p.get('name')}: {e}")
+        
+        print(f"TOTAL EXPECTED INCOMING: {total_income_this_month}")
+        print("--------------------------------------\n")
 
         # 3. Canteen Sales This Month (KPI Card)
         pipeline_month = [
@@ -502,7 +274,7 @@ def get_dashboard_metrics():
             'totalPatients': total_patients,
             'admissionsThisMonth': admissions_this_month,
             'dischargesThisMonth': discharges_this_month,
-            'totalExpectedBalance': total_expected_balance,  # Changed: now shows remaining balance
+            'totalIncomeThisMonth': total_income_this_month,
             'totalCanteenSalesThisMonth': total_canteen_sales_this_month
         })
     except Exception as e:
@@ -600,23 +372,9 @@ def get_patients():
     if not check_db(): return jsonify([])
     try:
         patients_cursor = mongo.db.patients.find()
-        
-        # Aggregate total canteen spending for all patients
-        canteen_totals_agg = list(mongo.db.canteen_sales.aggregate([
-            {'$match': {
-                '$or': [
-                    {'entry_type': {'$exists': False}},
-                    {'entry_type': {'$ne': 'other'}}
-                ]
-            }},
-            {'$group': {'_id': '$patient_id', 'total': {'$sum': '$amount'}}}
-        ]))
-        canteen_totals_map = {str(item['_id']): item['total'] for item in canteen_totals_agg}
-        
         patients = []
         for p in patients_cursor:
-            patient_id = str(p['_id'])
-            p['_id'] = patient_id
+            p['_id'] = str(p['_id'])
             # Ensure monthlyFee is present for canteen view logic
             p['monthlyFee'] = p.get('monthlyFee', '0')
             p['photo1'] = p.get('photo1', '')
@@ -624,10 +382,6 @@ def get_patients():
             p['photo3'] = p.get('photo3', '')
             p['isDischarged'] = p.get('isDischarged', False)
             p['dischargeDate'] = p.get('dischargeDate')
-            
-            # Include canteen spending as separate field
-            p['canteenSpent'] = canteen_totals_map.get(patient_id, 0)
-            
             patients.append(p)
         return jsonify(patients)
     except Exception as e:
@@ -652,10 +406,10 @@ def add_patient():
         data['isDischarged'] = data.get('isDischarged', False)
         data['dischargeDate'] = data.get('dischargeDate')
         
-        # Laundry fields (one-time charge added to final discharge bill)
+        # Laundry fields
         data['laundryStatus'] = data.get('laundryStatus', False)  # Boolean: whether laundry service is enabled
         if data['laundryStatus']:
-            data['laundryAmount'] = int(data.get('laundryAmount', 3500))  # Default 3500 if enabled (one-time charge)
+            data['laundryAmount'] = int(data.get('laundryAmount', 3500))  # Default 3500 if enabled
         else:
             data['laundryAmount'] = 0  # 0 if not enabled
         
@@ -775,18 +529,11 @@ def record_canteen_sale():
         # Convert amount to integer
         data['amount'] = int(data['amount'])
         
-        # Get the date, default to today if not provided
-        sale_date = data.get('date')
-        if sale_date:
-            sale_date = datetime.fromisoformat(sale_date.replace('Z', '+00:00'))
-        else:
-            sale_date = datetime.now()
-        
         sale = {
             'patient_id': ObjectId(data['patient_id']),
             'item': data['item'],
             'amount': data['amount'],
-            'date': sale_date,
+            'date': datetime.now(),
             'recorded_by': session.get('username', 'Canteen Staff')
         }
         result = mongo.db.canteen_sales.insert_one(sale)
@@ -803,12 +550,6 @@ def get_canteen_breakdown():
     
     today = datetime.now()
     start_of_month = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    # Calculate days in current month
-    if today.month == 12:
-        next_month = today.replace(year=today.year + 1, month=1, day=1)
-    else:
-        next_month = today.replace(month=today.month + 1, day=1)
-    days_in_month = (next_month - start_of_month).days
     
     try:
         # 1. Fetch all patients with ID, Name, Allowance AND isDischarged
@@ -821,7 +562,7 @@ def get_canteen_breakdown():
                 'name': p['name'], 
                 'allowance': p.get('monthlyAllowance', '0'), 
                 'sales': 0,
-                'isDischarged': p.get('isDischarged', False)
+                'isDischarged': p.get('isDischarged', False) # <--- NEW
             } 
             for p in patients_cursor
         }
@@ -844,401 +585,25 @@ def get_canteen_breakdown():
         for p_id, data in patients_map.items():
             try:
                 sales = data['sales']
-                monthly_allowance = int(data['allowance'].replace(',', ''))
-                # Calculate daily allowance
-                daily_allowance = monthly_allowance / days_in_month if days_in_month > 0 else 0
-                balance = monthly_allowance - sales
+                allowance = int(data['allowance'].replace(',', ''))
+                balance = allowance - sales
             except ValueError:
                 sales = data['sales']
-                monthly_allowance = 0
-                daily_allowance = 0
+                allowance = 0
                 balance = -sales
                 
             breakdown_list.append({
                 'id': p_id,
                 'name': data['name'],
                 'monthlyAllowance': data['allowance'],
-                'dailyAllowance': round(daily_allowance, 2),
                 'monthlySales': sales,
                 'remainingBalance': balance,
-                'isDischarged': data['isDischarged']
+                'isDischarged': data['isDischarged'] # <--- NEW
             })
             
         return jsonify(breakdown_list)
     except Exception as e:
         print(f"Canteen Breakdown Error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/canteen/daily-sheet', methods=['GET'])
-@role_required(['Admin', 'Canteen'])
-def get_daily_canteen_sheet():
-    """Get daily canteen sheet for today with all active patients"""
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    
-    try:
-        # Get query parameter for date, default to today
-        date_str = request.args.get('date')
-        if date_str:
-            target_date = datetime.fromisoformat(date_str)
-        else:
-            target_date = datetime.now()
-        
-        # Set time range for the target day
-        start_of_day = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
-        end_of_day = target_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-        
-        # Fetch all active patients
-        patients_cursor = mongo.db.patients.find(
-            {'isDischarged': {'$ne': True}},
-            {'name': 1, 'monthlyAllowance': 1}
-        ).sort('name', 1)
-        
-        # Get today's sales for each patient
-        pipeline = [
-            {'$match': {'date': {'$gte': start_of_day, '$lte': end_of_day}}},
-            {'$group': {
-                '_id': '$patient_id',
-                'items': {'$push': {'item': '$item', 'amount': '$amount'}},
-                'total': {'$sum': '$amount'}
-            }}
-        ]
-        daily_sales = {str(s['_id']): s for s in mongo.db.canteen_sales.aggregate(pipeline)}
-        
-        # Build sheet
-        sheet = []
-        for p in patients_cursor:
-            p_id = str(p['_id'])
-            sales_data = daily_sales.get(p_id, {'items': [], 'total': 0})
-            
-            sheet.append({
-                'id': p_id,
-                'name': p['name'],
-                'dailyAllowance': p.get('monthlyAllowance', '0'),
-                'todayItems': sales_data['items'],
-                'todayTotal': sales_data['total']
-            })
-        
-        return jsonify({
-            'date': target_date.strftime('%Y-%m-%d'),
-            'patients': sheet
-        })
-    except Exception as e:
-        print(f"Daily Sheet Error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/canteen/sales/history', methods=['GET'])
-@role_required(['Admin'])
-def get_canteen_sales_history():
-    """Get detailed canteen sales history - Admin only"""
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    
-    try:
-        patient_id = request.args.get('patient_id')
-        
-        query = {}
-        if patient_id:
-            query['patient_id'] = ObjectId(patient_id)
-        
-        # Get sales with patient names
-        sales_cursor = mongo.db.canteen_sales.find(query).sort('date', -1).limit(100)
-        
-        sales_list = []
-        for sale in sales_cursor:
-            # Get patient name
-            patient = mongo.db.patients.find_one({'_id': sale['patient_id']}, {'name': 1})
-            
-            sales_list.append({
-                'id': str(sale['_id']),
-                'patient_id': str(sale['patient_id']),
-                'patient_name': patient['name'] if patient else 'Unknown',
-                'item': sale.get('item', ''),
-                'amount': sale.get('amount', 0),
-                'date': sale['date'].isoformat() if sale.get('date') else '',
-                'recorded_by': sale.get('recorded_by', '')
-            })
-        
-        return jsonify(sales_list)
-    except Exception as e:
-        print(f"Sales History Error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/canteen/monthly-table', methods=['GET'])
-@role_required(['Admin', 'Canteen'])
-def get_canteen_monthly_table():
-    """Get monthly canteen table data with daily columns"""
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    
-    try:
-        # Get month and year from query params, default to current month
-        month = int(request.args.get('month', datetime.now().month))
-        year = int(request.args.get('year', datetime.now().year))
-        
-        # Calculate start and end of requested month
-        start_of_month = datetime(year, month, 1, 0, 0, 0)
-        if month == 12:
-            end_of_month = datetime(year + 1, 1, 1, 0, 0, 0)
-        else:
-            end_of_month = datetime(year, month + 1, 1, 0, 0, 0)
-        
-        days_in_month = (end_of_month - start_of_month).days
-        
-        # Get all patients with their allowances
-        patients_list = list(mongo.db.patients.find({}, {
-            'name': 1,
-            'monthlyAllowance': 1,
-            'isDischarged': 1,
-            'admissionDate': 1
-        }).sort('name', 1))
-        
-        # Get manual old balance overrides for this month/year
-        balance_overrides = {}
-        overrides_cursor = mongo.db.canteen_balance_overrides.find({
-            'month': month,
-            'year': year
-        })
-        for override in overrides_cursor:
-            balance_overrides[str(override['patient_id'])] = override['old_balance']
-        
-        if not patients_list:
-            return jsonify({'month': month, 'year': year, 'daysInMonth': days_in_month, 'patients': []})
-        
-        patient_ids = [p['_id'] for p in patients_list]
-        
-        def _safe_int(raw_val: object) -> int:
-            """Best-effort int conversion that strips non-digits."""
-            try:
-                cleaned = ''.join(ch for ch in str(raw_val or '0') if ch.isdigit() or ch == '-')
-                return int(cleaned) if cleaned not in ('', '-') else 0
-            except Exception:
-                return 0
-        
-        # BATCH QUERY: Get all previous sales for all patients at once
-        previous_sales_agg = list(mongo.db.canteen_sales.aggregate([
-            {'$match': {
-                'patient_id': {'$in': patient_ids},
-                'date': {'$lt': start_of_month},
-                '$or': [
-                    {'entry_type': {'$exists': False}},
-                    {'entry_type': {'$ne': 'other'}}
-                ]
-            }},
-            {'$group': {'_id': '$patient_id', 'total': {'$sum': '$amount'}}}
-        ]))
-        previous_sales_map = {str(item['_id']): item['total'] for item in previous_sales_agg}
-        
-        # BATCH QUERY: Get all previous adjustments
-        previous_adj_agg = list(mongo.db.canteen_sales.aggregate([
-            {'$match': {
-                'patient_id': {'$in': patient_ids},
-                'date': {'$lt': start_of_month},
-                'entry_type': 'other'
-            }},
-            {'$group': {'_id': '$patient_id', 'total': {'$sum': '$amount'}}}
-        ]))
-        previous_adj_map = {str(item['_id']): item['total'] for item in previous_adj_agg}
-        
-        # BATCH QUERY: Get all current month daily sales
-        current_month_sales = list(mongo.db.canteen_sales.find({
-            'patient_id': {'$in': patient_ids},
-            'date': {'$gte': start_of_month, '$lt': end_of_month},
-            '$or': [
-                {'entry_type': {'$exists': False}},
-                {'entry_type': {'$ne': 'other'}}
-            ]
-        }))
-        
-        # BATCH QUERY: Get all "other" entries for current month
-        other_entries = list(mongo.db.canteen_sales.find({
-            'patient_id': {'$in': patient_ids},
-            'date': {'$gte': start_of_month, '$lt': end_of_month},
-            'entry_type': 'other'
-        }))
-        other_map = {str(item['patient_id']): item['amount'] for item in other_entries}
-        
-        # BATCH QUERY: Get all-time totals for all patients
-        all_time_agg = list(mongo.db.canteen_sales.aggregate([
-            {'$match': {
-                'patient_id': {'$in': patient_ids},
-                '$or': [
-                    {'entry_type': {'$exists': False}},
-                    {'entry_type': {'$ne': 'other'}}
-                ]
-            }},
-            {'$group': {'_id': '$patient_id', 'total': {'$sum': '$amount'}}}
-        ]))
-        all_time_map = {str(item['_id']): item['total'] for item in all_time_agg}
-        
-        patients_data = []
-
-        for patient in patients_list:
-            patient_id = patient['_id']
-            patient_id_str = str(patient_id)
-            patient_name = patient.get('name', 'Unknown')
-            monthly_allowance = _safe_int(patient.get('monthlyAllowance', 0))
-            is_discharged = patient.get('isDischarged', False)
-            
-            # Get data from batch queries
-            previous_sales_total = previous_sales_map.get(patient_id_str, 0)
-            previous_adjustments = previous_adj_map.get(patient_id_str, 0)
-            
-            # Old Balance = Sum of total canteen money used in all previous months since admission
-            # This is simply the total of all canteen sales before the current viewing month
-            calculated_balance = previous_sales_total
-            
-            # Check if there's a manual override for this patient's old balance
-            old_balance = balance_overrides.get(patient_id_str, calculated_balance)
-            has_override = patient_id_str in balance_overrides
-            
-            # Build daily entries from batch query results
-            daily_entries = {}
-            for sale in current_month_sales:
-                if str(sale['patient_id']) == patient_id_str:
-                    day = sale['date'].day
-                    amount = sale.get('amount', 0)
-                    if day in daily_entries:
-                        daily_entries[day] += amount
-                    else:
-                        daily_entries[day] = amount
-            
-            # Get "other" amount from batch query
-            other_amount = other_map.get(patient_id_str, 0)
-            
-            # Calculate Month Total (sum of daily entries + other)
-            month_total = sum(daily_entries.values()) + other_amount
-            
-            # Get all-time total from batch query
-            total_spent = all_time_map.get(patient_id_str, 0)
-            
-            patients_data.append({
-                'id': str(patient_id),
-                'name': patient_name,
-                'oldBalance': old_balance,
-                'calculatedBalance': calculated_balance,
-                'hasManualOverride': has_override,
-                'dailyEntries': daily_entries,
-                'other': other_amount,
-                'monthTotal': month_total,
-                'total': total_spent,
-                'isDischarged': is_discharged,
-                'exceedsBalance': month_total > old_balance
-            })
-        
-        return jsonify({
-            'month': month,
-            'year': year,
-            'daysInMonth': days_in_month,
-            'patients': patients_data
-        })
-    except Exception as e:
-        print(f"Monthly Table Error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/canteen/old-balance', methods=['POST'])
-@role_required(['Admin'])
-def save_canteen_old_balance():
-    """
-    Save manual override for canteen old balance.
-    
-    IMPORTANT: This only affects the "Old Balance" display column in the monthly 
-    canteen tracking table. It does NOT affect actual patient billing or financial 
-    calculations. 
-    
-    The Old Balance is a budgeting/tracking feature that shows the allowance 
-    available at the start of the month. Actual billing uses the sum of 
-    canteen_sales entries, not this old balance field.
-    """
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    
-    data = clean_input_data(request.json)
-    try:
-        patient_id = data.get('patient_id')
-        month = int(data.get('month'))
-        year = int(data.get('year'))
-        old_balance = int(data.get('old_balance', 0))
-        
-        # Upsert the override
-        mongo.db.canteen_balance_overrides.update_one(
-            {
-                'patient_id': ObjectId(patient_id),
-                'month': month,
-                'year': year
-            },
-            {
-                '$set': {
-                    'old_balance': old_balance,
-                    'updated_at': datetime.now(),
-                    'updated_by': session.get('username')
-                }
-            },
-            upsert=True
-        )
-        
-        return jsonify({"message": "Old balance updated"})
-    except Exception as e:
-        print(f"Save Old Balance Error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/canteen/daily-entry', methods=['POST'])
-@role_required(['Admin', 'Canteen'])
-def save_canteen_daily_entry():
-    """Save or update a daily canteen entry"""
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    
-    data = clean_input_data(request.json)
-    if not all(k in data for k in ['patient_id', 'date', 'amount', 'entry_type']):
-        return jsonify({"error": "Missing required fields"}), 400
-    
-    try:
-        patient_id = ObjectId(data['patient_id'])
-        entry_date = datetime.fromisoformat(data['date'].replace('Z', '+00:00'))
-        amount = int(data['amount'])
-        entry_type = data['entry_type']  # 'daily' or 'other'
-        
-        # Check if entry already exists
-        existing_entry = mongo.db.canteen_sales.find_one({
-            'patient_id': patient_id,
-            'date': entry_date,
-            'entry_type': entry_type
-        })
-        
-        # Role-based permission check
-        user_role = session.get('role')
-        username = session.get('username', 'Unknown')
-        
-        if existing_entry:
-            # Entry exists - check if user can edit
-            if user_role == 'Canteen':
-                # Canteen staff cannot edit existing entries
-                return jsonify({"error": "Canteen staff cannot edit existing entries"}), 403
-            elif user_role == 'Admin':
-                # Admin can edit
-                mongo.db.canteen_sales.update_one(
-                    {'_id': existing_entry['_id']},
-                    {'$set': {
-                        'amount': amount,
-                        'edited_by': username,
-                        'edited_at': datetime.now()
-                    }}
-                )
-                return jsonify({"message": "Entry updated", "id": str(existing_entry['_id'])}), 200
-        else:
-            # New entry - both Admin and Canteen can add
-            new_entry = {
-                'patient_id': patient_id,
-                'date': entry_date,
-                'amount': amount,
-                'entry_type': entry_type,
-                'item': data.get('item', ''),  # Optional item description
-                'recorded_by': username,
-                'created_at': datetime.now()
-            }
-            result = mongo.db.canteen_sales.insert_one(new_entry)
-            return jsonify({"message": "Entry recorded", "id": str(result.inserted_id)}), 201
-            
-    except ValueError as ve:
-        return jsonify({"error": f"Invalid data format: {str(ve)}"}), 400
-    except Exception as e:
-        print(f"Daily Entry Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 # --- EXPENSES APIs ---
@@ -1382,14 +747,31 @@ def expenses_summary():
             elif item['_id'] == 'outgoing':
                 outgoing = item['total']
 
-        # Note: We only count manual expenses here.
-        # Patient fees and canteen are tracked separately in accounts.
-        # This avoids double-counting since receivedAmount already captures actual payments.
-        
+        # Add automated incoming: monthly fees + canteen sales (month)
+        # Monthly fees
+        patients = mongo.db.patients.find()
+        auto_fees = 0
+        for p in patients:
+            try:
+                auto_fees += int(str(p.get('monthlyFee', '0')).replace(',', ''))
+            except ValueError:
+                pass
+        # Canteen sales this month
+        pipeline_sales = [
+            {'$match': {'date': {'$gte': start_of_month}}},
+            {'$group': {'_id': None, 'total_sales': {'$sum': '$amount'}}}
+        ]
+        sales_result = list(mongo.db.canteen_sales.aggregate(pipeline_sales))
+        auto_canteen = sales_result[0]['total_sales'] if sales_result else 0
+
+        incoming += auto_fees + auto_canteen
+
         return jsonify({
-            'incoming': incoming,  # Only manual recorded income
-            'outgoing': outgoing,  # Only manual recorded expenses
-            'net': incoming - outgoing
+            'incoming': incoming,
+            'outgoing': outgoing,
+            'net': incoming - outgoing,
+            'autoFees': auto_fees,
+            'autoCanteen': auto_canteen
         })
     except Exception as e:
         print(f"Expenses summary error: {e}")
@@ -1454,18 +836,6 @@ def export_patients():
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name='Patients')
-            
-            # Configure A4 page setup
-            worksheet = writer.sheets['Patients']
-            worksheet.page_setup.paperSize = 9  # A4
-            worksheet.page_setup.orientation = 'landscape'
-            worksheet.page_setup.fitToWidth = 1
-            worksheet.page_setup.fitToHeight = 0
-            worksheet.print_options.horizontalCentered = True
-            worksheet.page_margins.left = 0.5
-            worksheet.page_margins.right = 0.5
-            worksheet.page_margins.top = 0.75
-            worksheet.page_margins.bottom = 0.75
         
         output.seek(0)
         print("Excel file created successfully")
@@ -1493,8 +863,6 @@ def export_patients():
 def get_accounts_summary():
     if not check_db(): return jsonify({"error": "Database error"}), 500
     try:
-        from datetime import datetime
-        
         # Get all patients - Added 'isDischarged' to projection
         patients = list(mongo.db.patients.find({}, {
             'name': 1, 'fatherName': 1, 'admissionDate': 1, 
@@ -1513,25 +881,6 @@ def get_accounts_summary():
         summary = []
         for p in patients:
             pid = str(p['_id'])
-            
-            # Calculate days elapsed from admission date
-            admission_date = p.get('admissionDate')
-            days_elapsed = 0
-            if admission_date:
-                try:
-                    if isinstance(admission_date, str):
-                        admission_dt = datetime.fromisoformat(admission_date.replace('Z', '+00:00'))
-                    else:
-                        admission_dt = admission_date
-                    days_diff = (datetime.now() - admission_dt).days
-                    days_elapsed = max(0, days_diff)
-                except:
-                    days_elapsed = 0
-            
-            # Get monthly fee and calculate prorated fee
-            monthly_fee = p.get('monthlyFee', '0')
-            calculated_fee = calculate_prorated_fee(monthly_fee, days_elapsed)
-            
             summary.append({
                 'id': pid,
                 'name': p.get('name', ''),
@@ -1539,9 +888,7 @@ def get_accounts_summary():
                 'age': p.get('age', ''),
                 'area': p.get('address', ''), 
                 'admissionDate': p.get('admissionDate', ''),
-                'monthlyFee': monthly_fee,
-                'calculatedFee': calculated_fee,  # NEW: Prorated fee
-                'daysElapsed': days_elapsed,  # NEW: Days elapsed for reference
+                'monthlyFee': p.get('monthlyFee', '0'),
                 'canteenTotal': sales_map.get(pid, 0),
                 'laundryStatus': p.get('laundryStatus', False),
                 'laundryAmount': p.get('laundryAmount', 0),
@@ -1564,8 +911,8 @@ def get_call_meeting_data():
     
     try:
         today = datetime.now()
-        year = int(request.args.get('year', today.year))
-        month = int(request.args.get('month', today.month))
+        year = today.year
+        month = today.month
         
         # Fetch all records for the current month
         records_cursor = mongo.db.call_meeting_tracker.find({
@@ -1576,7 +923,6 @@ def get_call_meeting_data():
         records = []
         for r in records_cursor:
             r['_id'] = str(r['_id'])
-            r['status'] = r.get('status', r.get('type', 'Tick'))
             records.append(r)
         
         return jsonify(records)
@@ -1591,12 +937,8 @@ def add_call_meeting_entry():
     if not check_db(): return jsonify({"error": "Database error"}), 500
     
     data = clean_input_data(request.json)
-    if not all(k in data for k in ['name', 'day', 'month', 'year', 'date_of_admission']):
+    if not all(k in data for k in ['name', 'day', 'month', 'year', 'type', 'date_of_admission']):
         return jsonify({"error": "Missing fields"}), 400
-    
-    status_value = data.get('status') or data.get('type') or 'Meeting'
-    if status_value not in ['Meeting', 'Call']:
-        return jsonify({"error": "Type must be Meeting or Call"}), 400
     
     try:
         entry = {
@@ -1604,8 +946,7 @@ def add_call_meeting_entry():
             'day': int(data['day']),
             'month': int(data['month']),
             'year': int(data['year']),
-            'type': status_value,
-            'status': status_value,
+            'type': data['type'],  # 'Call', 'Meeting', or 'Text'
             'date_of_admission': data['date_of_admission'],
             'recorded_by': session.get('username', 'Admin'),
             'created_at': datetime.now()
@@ -1660,27 +1001,30 @@ def get_call_meeting_summary(month, year):
             'month': month
         })
         
-        # Count tick / cross
-        tick_count = 0
-        cross_count = 0
+        # Count by type and by person
+        call_count = 0
+        meeting_count = 0
+        text_count = 0
         by_person = {}
         
         for r in records_cursor:
-            record_status = (r.get('status') or r.get('type') or 'Meeting')
-            record_status = record_status.capitalize()
-            is_meeting = record_status == 'Meeting'
-            tick_count += 1 if is_meeting else 0
-            cross_count += 0 if is_meeting else 1
+            record_type = r.get('type', 'Unknown')
+            if record_type == 'Call':
+                call_count += 1
+            elif record_type == 'Meeting':
+                meeting_count += 1
+            elif record_type == 'Text':
+                text_count += 1
             
             person = r.get('name', 'Unknown')
             if person not in by_person:
-                by_person[person] = {'Meeting': 0, 'Call': 0}
-            by_person[person]['Meeting'] = by_person[person].get('Meeting', 0) + (1 if is_meeting else 0)
-            by_person[person]['Call'] = by_person[person].get('Call', 0) + (0 if is_meeting else 1)
+                by_person[person] = {'Call': 0, 'Meeting': 0, 'Text': 0}
+            by_person[person][record_type] = by_person[person].get(record_type, 0) + 1
         
         return jsonify({
-            'totalMeetings': tick_count,
-            'totalCalls': cross_count,
+            'totalCalls': call_count,
+            'totalMeetings': meeting_count,
+            'totalTexts': text_count,
             'byPerson': by_person
         })
     except Exception as e:
@@ -1867,251 +1211,6 @@ def get_payment_records():
         return jsonify({"error": str(e)}), 500
 
 
-# ============================================================
-#  OVERHEADS MANAGEMENT (Admin Only)
-# ============================================================
-
-@app.route('/api/overheads/<int:month>/<int:year>', methods=['GET'])
-@role_required(['Admin'])
-def get_overheads(month, year):
-    """
-    Fetch overhead entries for a given month/year.
-    Also aggregates daily canteen totals from canteen_sales.
-    """
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    try:
-        # Fetch stored overhead entries for this month
-        overheads = list(mongo.db.overheads.find({
-            'month': month,
-            'year': year
-        }))
-        
-        # Convert to dict keyed by date
-        overhead_map = {}
-        for entry in overheads:
-            date_key = entry.get('date')
-            if date_key:
-                overhead_map[date_key] = {
-                    '_id': str(entry['_id']),
-                    'date': date_key,
-                    'kitchen': entry.get('kitchen', 0),
-                    'canteen_auto': entry.get('canteen_auto', 0),
-                    'others': entry.get('others', 0),
-                    'pay_advance': entry.get('pay_advance', 0),
-                    'employee_names': entry.get('employee_names', ''),
-                    'income': entry.get('income', 0),
-                    'total_expense': entry.get('total_expense', 0)
-                }
-        
-        # Aggregate daily canteen sales totals
-        start_date = datetime(year, month, 1)
-        if month == 12:
-            end_date = datetime(year + 1, 1, 1)
-        else:
-            end_date = datetime(year, month + 1, 1)
-        
-        canteen_aggregation = mongo.db.canteen_sales.aggregate([
-            {
-                '$match': {
-                    'date': {
-                        '$gte': start_date,
-                        '$lt': end_date
-                    }
-                }
-            },
-            {
-                '$group': {
-                    '_id': {
-                        '$dateToString': {
-                            'format': '%Y-%m-%d',
-                            'date': '$date'
-                        }
-                    },
-                    'total': {'$sum': '$amount'}
-                }
-            }
-        ])
-        
-        canteen_daily = {item['_id']: item['total'] for item in canteen_aggregation}
-        
-        # Calculate days in month
-        if month == 12:
-            next_month = datetime(year + 1, 1, 1)
-        else:
-            next_month = datetime(year, month + 1, 1)
-        days_in_month = (next_month - datetime(year, month, 1)).days
-        
-        return jsonify({
-            'overheads': overhead_map,
-            'canteen_daily': canteen_daily,
-            'days_in_month': days_in_month
-        })
-    except Exception as e:
-        print(f"Get Overheads Error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/overheads/annual/<int:year>', methods=['GET'])
-@role_required(['Admin'])
-def get_overheads_annual(year):
-    """
-    Aggregate total income, expense, and profit for a full year,
-    including canteen sales from canteen_sales collection.
-    """
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    try:
-        # Aggregate canteen sales for the entire year
-        start_date = datetime(year, 1, 1)
-        end_date = datetime(year + 1, 1, 1)
-        
-        canteen_aggregation = mongo.db.canteen_sales.aggregate([
-            {
-                '$match': {
-                    'date': {
-                        '$gte': start_date,
-                        '$lt': end_date
-                    }
-                }
-            },
-            {
-                '$group': {
-                    '_id': None,
-                    'total_canteen': {'$sum': '$amount'}
-                }
-            }
-        ])
-        
-        canteen_result = list(canteen_aggregation)
-        total_canteen = canteen_result[0]['total_canteen'] if canteen_result else 0
-        
-        # Aggregate overhead entries
-        entries = list(mongo.db.overheads.find({'year': year}))
-
-        total_income = 0.0
-        total_other_expense = 0.0
-
-        for entry in entries:
-            income = float(entry.get('income', 0))
-            # Sum kitchen, others, pay_advance (excluding canteen_auto to avoid double-counting)
-            kitchen = float(entry.get('kitchen', 0))
-            others = float(entry.get('others', 0))
-            pay_advance = float(entry.get('pay_advance', 0))
-            
-            total_income += income
-            total_other_expense += (kitchen + others + pay_advance)
-
-        # Total expense = other expenses + canteen sales
-        total_expense = total_other_expense + total_canteen
-        profit = total_income - total_expense
-
-        return jsonify({
-            'year': year,
-            'total_income': total_income,
-            'total_expense': total_expense,
-            'total_canteen': total_canteen,
-            'profit': profit
-        })
-    except Exception as e:
-        print(f"Get Annual Overheads Error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/overheads/entry', methods=['POST'])
-@role_required(['Admin'])
-def save_overhead_entry():
-    """
-    Save or update a single overhead entry for a specific date.
-    """
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    try:
-        data = request.get_json()
-        date = data.get('date')  # Format: YYYY-MM-DD
-        month = data.get('month')
-        year = data.get('year')
-        
-        # Parse values
-        kitchen = float(data.get('kitchen', 0))
-        others = float(data.get('others', 0))
-        pay_advance = float(data.get('pay_advance', 0))
-        income = float(data.get('income', 0))
-        employee_names = data.get('employee_names', '')
-        canteen_auto = float(data.get('canteen_auto', 0))
-        
-        # Calculate total expense
-        total_expense = kitchen + canteen_auto + others + pay_advance
-        
-        entry = {
-            'date': date,
-            'month': month,
-            'year': year,
-            'kitchen': kitchen,
-            'canteen_auto': canteen_auto,
-            'others': others,
-            'pay_advance': pay_advance,
-            'employee_names': employee_names,
-            'income': income,
-            'total_expense': total_expense,
-            'last_updated': datetime.now()
-        }
-        
-        # Upsert: update if exists, insert if not
-        mongo.db.overheads.update_one(
-            {'date': date, 'month': month, 'year': year},
-            {'$set': entry},
-            upsert=True
-        )
-        
-        return jsonify({"message": "Entry saved", "entry": entry})
-    except Exception as e:
-        print(f"Save Overhead Entry Error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/overheads/canteen-sync/<int:month>/<int:year>', methods=['GET'])
-@role_required(['Admin'])
-def sync_overheads_canteen(month, year):
-    """
-    Get updated daily canteen totals for the month.
-    Used for real-time sync when canteen sales are added.
-    """
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    try:
-        start_date = datetime(year, month, 1)
-        if month == 12:
-            end_date = datetime(year + 1, 1, 1)
-        else:
-            end_date = datetime(year, month + 1, 1)
-        
-        canteen_aggregation = mongo.db.canteen_sales.aggregate([
-            {
-                '$match': {
-                    'date': {
-                        '$gte': start_date,
-                        '$lt': end_date
-                    }
-                }
-            },
-            {
-                '$group': {
-                    '_id': {
-                        '$dateToString': {
-                            'format': '%Y-%m-%d',
-                            'date': '$date'
-                        }
-                    },
-                    'total': {'$sum': '$amount'}
-                }
-            }
-        ])
-        
-        canteen_daily = {item['_id']: item['total'] for item in canteen_aggregation}
-        
-        return jsonify({'canteen_daily': canteen_daily})
-    except Exception as e:
-        print(f"Sync Overheads Canteen Error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
 def _month_start_n_months_ago(months_ago: int) -> datetime:
     today = datetime.now()
     # months_ago = 0 => current month start; 5 => 5 months back
@@ -2185,21 +1284,7 @@ def export_payment_records():
             df = pd.DataFrame([{'Message': 'No payment records for selected range'}])
 
         output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Payment Records')
-            
-            # Configure A4 page setup
-            worksheet = writer.sheets['Payment Records']
-            worksheet.page_setup.paperSize = 9  # A4
-            worksheet.page_setup.orientation = 'portrait'
-            worksheet.page_setup.fitToWidth = 1
-            worksheet.page_setup.fitToHeight = 0
-            worksheet.print_options.horizontalCentered = True
-            worksheet.page_margins.left = 0.75
-            worksheet.page_margins.right = 0.75
-            worksheet.page_margins.top = 0.75
-            worksheet.page_margins.bottom = 0.75
-        
+        df.to_excel(output, index=False)
         output.seek(0)
 
         filename = f"payment_records_{'six_months' if range_key == 'six_months' else 'current_month'}.xlsx"
@@ -2248,8 +1333,7 @@ def add_patient_payment(id):
             'category': 'Patient Fee',
             'note': expense_note,
             'payment_method': payment_method,
-            'patient_id': str(id),
-            'screenshot': screenshot,
+            'screenshot': screenshot, # Store proof if available
             'date': datetime.now(),
             'recorded_by': session.get('username', 'Admin'),
             'auto': True
@@ -2258,157 +1342,6 @@ def add_patient_payment(id):
         return jsonify({"message": "Payment recorded successfully", "new_total": new_total})
     except Exception as e:
         print(f"Payment Error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/patients/<id>/discharge-bill', methods=['GET'])
-@role_required(['Admin', 'Doctor'])
-def generate_discharge_bill(id):
-    """Generate a discharge bill for a patient - formatted to fit on one A4 page"""
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    
-    try:
-        from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
-        
-        # Fetch patient data
-        patient = mongo.db.patients.find_one({'_id': ObjectId(id)})
-        if not patient:
-            return jsonify({"error": "Patient not found"}), 404
-        
-        # Calculate days elapsed from admission date
-        admission_date = patient.get('admissionDate')
-        days_elapsed = 0
-        if admission_date:
-            try:
-                if isinstance(admission_date, str):
-                    admission_dt = datetime.fromisoformat(admission_date.replace('Z', '+00:00'))
-                else:
-                    admission_dt = admission_date
-                days_diff = (datetime.now() - admission_dt).days
-                days_elapsed = max(0, days_diff)
-            except:
-                days_elapsed = 0
-        
-        # Calculate canteen sales total for this patient
-        pipeline = [
-            {'$match': {'patient_id': ObjectId(id)}},
-            {'$group': {'_id': None, 'total_sales': {'$sum': '$amount'}}}
-        ]
-        canteen_result = list(mongo.db.canteen_sales.aggregate(pipeline))
-        canteen_total = canteen_result[0]['total_sales'] if canteen_result else 0
-        
-        # Parse financial data and calculate prorated fee
-        monthly_fee_raw = patient.get('monthlyFee', '0')
-        monthly_fee = calculate_prorated_fee(monthly_fee_raw, days_elapsed)
-        laundry_amount = patient.get('laundryAmount', 0) if patient.get('laundryStatus', False) else 0
-        received_amount = int(str(patient.get('receivedAmount', '0')).replace(',', '') or '0')
-        
-        # Calculate totals
-        total_charges = monthly_fee + canteen_total + laundry_amount
-        balance_due = total_charges - received_amount
-        
-        # Create discharge bill data
-        bill_data = {
-            'Patient Name': patient.get('name', ''),
-            'Father Name': patient.get('fatherName', ''),
-            'CNIC': patient.get('cnic', ''),
-            'Admission Date': patient.get('admissionDate', ''),
-            'Discharge Date': patient.get('dischargeDate', '') or datetime.now().strftime('%Y-%m-%d'),
-            'Days Stayed': days_elapsed,
-            'Monthly Fee': monthly_fee,
-            'Canteen Charges': canteen_total,
-            'Laundry Charges': laundry_amount,
-            'Total Charges': total_charges,
-            'Amount Paid': received_amount,
-            'Balance Due': balance_due
-        }
-        
-        # Create Excel workbook
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            # Create a DataFrame for the bill
-            df = pd.DataFrame([bill_data])
-            df.to_excel(writer, index=False, sheet_name='Discharge Bill')
-            
-            worksheet = writer.sheets['Discharge Bill']
-            
-            # Configure A4 page setup - Portrait, fit to one page
-            worksheet.page_setup.paperSize = 9  # A4
-            worksheet.page_setup.orientation = 'portrait'
-            worksheet.page_setup.fitToPage = True
-            worksheet.page_setup.fitToWidth = 1
-            worksheet.page_setup.fitToHeight = 1  # Force to fit on 1 page height
-            worksheet.page_setup.scale = None  # Allow auto-scaling
-            
-            # Set margins to maximize space
-            worksheet.page_margins.left = 0.5
-            worksheet.page_margins.right = 0.5
-            worksheet.page_margins.top = 0.5
-            worksheet.page_margins.bottom = 0.5
-            worksheet.page_margins.header = 0.3
-            worksheet.page_margins.footer = 0.3
-            
-            # Center horizontally on page
-            worksheet.print_options.horizontalCentered = True
-            
-            # Styling
-            thin_border = Border(
-                left=Side(style='thin'),
-                right=Side(style='thin'),
-                top=Side(style='thin'),
-                bottom=Side(style='thin')
-            )
-            
-            header_fill = PatternFill(start_color='366092', end_color='366092', fill_type='solid')
-            total_fill = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')
-            
-            # Apply styles to header row
-            for cell in worksheet[1]:
-                cell.font = Font(bold=True, size=10, color='FFFFFF')
-                cell.fill = header_fill
-                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-                cell.border = thin_border
-            
-            # Apply styles to data rows
-            for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row):
-                for cell in row:
-                    cell.font = Font(size=10)
-                    cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-                    cell.border = thin_border
-                    # Highlight financial totals
-                    if 'Total' in str(worksheet.cell(1, cell.column).value) or 'Balance' in str(worksheet.cell(1, cell.column).value):
-                        cell.fill = total_fill
-                        cell.font = Font(size=10, bold=True)
-            
-            # Auto-adjust column widths (but keep them reasonable for A4)
-            for column in worksheet.columns:
-                max_length = 0
-                column_letter = column[0].column_letter
-                for cell in column:
-                    try:
-                        if len(str(cell.value)) > max_length:
-                            max_length = len(str(cell.value))
-                    except:
-                        pass
-                adjusted_width = min(max_length + 2, 25)  # Cap at 25 to fit on A4
-                worksheet.column_dimensions[column_letter].width = adjusted_width
-            
-            # Set row height
-            worksheet.row_dimensions[1].height = 30  # Header
-            for row in range(2, worksheet.max_row + 1):
-                worksheet.row_dimensions[row].height = 20
-        
-        output.seek(0)
-        
-        filename = f"discharge_bill_{patient.get('name', 'patient').replace(' ', '_')}.xlsx"
-        return send_file(
-            output,
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            as_attachment=True,
-            download_name=filename
-        )
-    except Exception as e:
-        print(f"Discharge Bill Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -2577,7 +1510,6 @@ def list_psych_sessions():
                 'patient_names': [patient_map.get(pid, 'Unknown') for pid in s.get('patient_ids', [])],
                 'title': s.get('title', ''),
                 'note': s.get('note', ''),
-                'note_detail': s.get('note_detail'),
                 'note_author': s.get('note_author', ''),
                 'note_at': s.get('note_at').isoformat() if s.get('note_at') else None
             })
@@ -2637,17 +1569,8 @@ def add_psych_session_note(session_id):
 
     data = clean_input_data(request.json)
     note_text = data.get('note', '').strip()
-    note_issue = data.get('issue', '').strip()
-    note_intervention = data.get('intervention', '').strip()
-    note_response = data.get('response', '').strip()
-
-    # Require the structured fields; keep legacy fallback if only note provided
-    if not (note_issue and note_intervention and note_response):
-        if not note_text:
-            return jsonify({"error": "Issue, intervention, and response are required"}), 400
-    else:
-        # Compose a legacy note string for compatibility
-        note_text = f"Issue: {note_issue}\nIntervention: {note_intervention}\nResponse: {note_response}"
+    if not note_text:
+        return jsonify({"error": "Note is required"}), 400
 
     try:
         session_doc = mongo.db.psych_sessions.find_one({'_id': ObjectId(session_id)})
@@ -2661,11 +1584,6 @@ def add_psych_session_note(session_id):
             {'_id': ObjectId(session_id)},
             {'$set': {
                 'note': note_text,
-                'note_detail': {
-                    'issue': note_issue,
-                    'intervention': note_intervention,
-                    'response': note_response
-                } if note_issue and note_intervention and note_response else None,
                 'note_author': session.get('username'),
                 'note_at': datetime.now()
             }}
@@ -2724,177 +1642,6 @@ def save_attendance():
 
     return jsonify(success=True)
 
-# --- EMERGENCY DASHBOARD APIs ---
-@app.route('/api/emergency', methods=['GET'])
-@login_required
-def get_emergency_alerts():
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    try:
-        alerts = list(mongo.db.emergency_alerts.find().sort('created_at', -1))
-        for a in alerts:
-            a['_id'] = str(a['_id'])
-            # Format: 12 Oct, 04:30 PM
-            if a.get('created_at'):
-                a['date'] = a['created_at'].strftime('%d %b, %I:%M %p')
-            else:
-                a['date'] = 'Just now'
-        return jsonify(alerts)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/emergency', methods=['POST'])
-@login_required
-def add_emergency_alert():
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    try:
-        data = clean_input_data(request.json)
-        alert = {
-            'patient_name': data.get('patient_name', 'Unknown'),
-            'note': data.get('note', ''),
-            'severity': data.get('severity', 'critical'), 
-            'added_by': session.get('username', 'Staff'),
-            'created_at': datetime.now()
-        }
-        mongo.db.emergency_alerts.insert_one(alert)
-        return jsonify({"message": "Alert added"}), 201
-    except Exception as e:
-        print(f"Emergency Save Error: {e}") # Added debug print
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/emergency/<id>', methods=['DELETE'])
-@login_required
-def delete_emergency_alert(id):
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    try:
-        mongo.db.emergency_alerts.delete_one({'_id': ObjectId(id)})
-        return jsonify({"message": "Alert resolved"})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/patients/<id>/payment_history', methods=['GET'])
-@role_required(['Admin'])
-def get_patient_payment_history(id):
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    try:
-        # 1. Get Patient Details to find the name
-        patient = mongo.db.patients.find_one({'_id': ObjectId(id)})
-        if not patient:
-            return jsonify([])
-
-        target_name = patient.get('name', '').strip().lower()
-        target_id_str = str(id)
-        
-        # 2. Fetch ALL "Patient Fee" expenses (Incoming only)
-        # We fetch all candidates first, then filter in Python for 100% accuracy matching your other API
-        cursor = mongo.db.expenses.find({
-            'type': 'incoming',
-            'category': 'Patient Fee'
-        }).sort('date', 1)
-        
-        history = []
-        
-        for doc in cursor:
-            # --- MATCHING LOGIC ---
-            is_match = False
-            
-            # Check A: Explicit ID Match (if available)
-            doc_p_id = str(doc.get('patient_id', ''))
-            if doc_p_id == target_id_str:
-                is_match = True
-            
-            # Check B: Name Match in Note (The logic from your working API)
-            # note format: "Partial payment from [Name] via..."
-            if not is_match:
-                note = doc.get('note', '').lower()
-                if target_name and f"from {target_name}" in note:
-                    is_match = True
-            
-            if is_match:
-                # Safe date formatting
-                date_str = '-'
-                if doc.get('date'):
-                    if isinstance(doc['date'], str):
-                        date_str = doc['date'][:10]
-                    else:
-                        date_str = doc['date'].strftime('%d-%b-%Y')
-
-                history.append({
-                    'date': date_str,
-                    'amount': doc.get('amount', 0),
-                    'method': doc.get('payment_method', 'Cash'),
-                    'note': doc.get('note', '')
-                })
-        return jsonify(history)
-
-    except Exception as e:
-        print(f"History error: {e}")
-        return jsonify([])    
-
-# --- OLD BALANCE / RECOVERY ROUTES ---
-
-@app.route('/api/old-balances', methods=['GET'])
-@role_required(['Admin'])
-def get_old_balances():
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    try:
-        cursor = mongo.db.old_balances.find().sort('created_at', -1)
-        balances = []
-        for b in cursor:
-            balances.append({
-                'id': str(b['_id']),
-                'name': b.get('name', ''),
-                'amount': b.get('amount', 0),
-                'commitment_date': b.get('commitment_date', ''),
-                'last_call_date': b.get('last_call_date', ''),
-                'note': b.get('note', '')
-            })
-        return jsonify(balances)
-    except Exception as e:
-        print(f"Old Balance Fetch Error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/old-balances', methods=['POST'])
-@role_required(['Admin'])
-def add_old_balance():
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    data = clean_input_data(request.json)
-    try:
-        record = {
-            'name': data.get('name'),
-            'amount': int(data.get('amount', 0)),
-            'commitment_date': data.get('commitment_date'),
-            'last_call_date': data.get('last_call_date'),
-            'note': data.get('note', ''),
-            'created_at': datetime.now(),
-            'added_by': session.get('username')
-        }
-        result = mongo.db.old_balances.insert_one(record)
-        return jsonify({"message": "Record added", "id": str(result.inserted_id)}), 201
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/old-balances/<id>', methods=['DELETE'])
-@role_required(['Admin'])
-def delete_old_balance(id):
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    try:
-        mongo.db.old_balances.delete_one({'_id': ObjectId(id)})
-        return jsonify({"message": "Record deleted"})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# --- HEALTH CHECK ENDPOINT (for cron-job.org) ---
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Lightweight health check endpoint for uptime monitoring"""
-    return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()}), 200
-
-@app.route('/ping', methods=['GET', 'HEAD'])
-def ping():
-    """Ultra-minimal ping endpoint - even lighter than /health"""
-    return '', 200
-    
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
