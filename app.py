@@ -305,7 +305,7 @@ def login():
         print("=== Login attempt started ===")
         
         database = get_db()
-        if not database:
+        if database is None:
             print("ERROR: Database connection failed")
             return jsonify({"error": "Database connection failed"}), 500
         
