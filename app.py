@@ -55,8 +55,8 @@ def get_db():
     
     if db is not None:
         try:
-            # Test if connection is still alive
-            mongo_client.admin.command('ping')
+            # Test if connection is still alive with shorter timeout
+            mongo_client.admin.command('ping', maxTimeMS=3000)
             return db
         except Exception as e:
             # Connection died, reset it
@@ -70,18 +70,21 @@ def get_db():
             print("Creating new MongoDB connection...")
             print(f"Python SSL version: {ssl.OPENSSL_VERSION}")
             
-            # Simplified connection for MongoDB Atlas with srv
-            # Let pymongo handle SSL automatically
+            # Optimized connection for Render
             mongo_client = MongoClient(
                 mongo_uri,
-                serverSelectionTimeoutMS=30000,
-                connectTimeoutMS=30000,
-                socketTimeoutMS=30000,
-                maxPoolSize=1,
-                retryWrites=True
+                serverSelectionTimeoutMS=10000,  # Reduced for faster failure
+                connectTimeoutMS=10000,
+                socketTimeoutMS=45000,
+                maxPoolSize=10,  # Increased for better performance
+                minPoolSize=1,
+                retryWrites=True,
+                retryReads=True,
+                w='majority',
+                directConnection=False
             )
-            # Test the connection
-            mongo_client.admin.command('ping')
+            # Test the connection with timeout
+            mongo_client.admin.command('ping', maxTimeMS=5000)
             # Extract database name from URI or use default
             db_name = mongo_uri.split('/')[-1].split('?')[0] or 'RoohPMS'
             db = mongo_client[db_name]
