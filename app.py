@@ -11,15 +11,24 @@ import os
 import pandas as pd
 import io
 from dotenv import load_dotenv 
+import sys
 
+# Load .env only in development
 load_dotenv()
+
+# Enable stdout flushing for Vercel logs
+sys.stdout.flush()
 
 app = Flask(__name__)
 
 # --- CONFIGURATION ---
+print("=== Application Starting ===" )
 mongo_uri = os.environ.get("MONGO_URI")
 if not mongo_uri:
+    print("ERROR: MONGO_URI environment variable is missing!")
     raise ValueError("MONGO_URI environment variable is required")
+else:
+    print("MONGO_URI found")
 
 secret_key = os.environ.get("SECRET_KEY")
 if not secret_key:
@@ -48,19 +57,21 @@ def get_db():
             # Test if connection is still alive
             mongo_client.admin.command('ping')
             return db
-        except:
+        except Exception as e:
             # Connection died, reset it
+            print(f"Connection ping failed, resetting: {e}")
             mongo_client = None
             db = None
     
     # Create new connection
     if mongo_uri:
         try:
+            print("Creating new MongoDB connection...")
             mongo_client = MongoClient(
                 mongo_uri,
-                serverSelectionTimeoutMS=5000,
-                connectTimeoutMS=10000,
-                socketTimeoutMS=10000,
+                serverSelectionTimeoutMS=30000,  # Increased for cold starts
+                connectTimeoutMS=30000,
+                socketTimeoutMS=30000,
                 maxPoolSize=1,  # Important for serverless
                 retryWrites=True
             )
@@ -69,9 +80,12 @@ def get_db():
             # Extract database name from URI or use default
             db_name = mongo_uri.split('/')[-1].split('?')[0] or 'RoohPMS'
             db = mongo_client[db_name]
+            print(f"MongoDB connected to database: {db_name}")
             return db
         except Exception as e:
             print(f"MongoDB connection error: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     else:
         print("MONGO_URI not set")
@@ -280,23 +294,35 @@ def index():
 @app.route('/api/auth/login', methods=['POST'])
 def login():
     try:
-        if not check_db(): 
-            return jsonify({"error": "Database error"}), 500
+        print("=== Login attempt started ===")
+        
+        database = get_db()
+        if not database:
+            print("ERROR: Database connection failed")
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        print("Database connection successful")
         
         data = clean_input_data(request.json or {})
         username = data.get('username')
         password = data.get('password')
         
+        print(f"Login attempt for username: {username}")
+        
         if not username or not password:
+            print("ERROR: Missing username or password")
             return jsonify({"error": "Username and password are required"}), 400
         
-        user = get_db().users.find_one({"username": username})
+        user = database.users.find_one({"username": username})
+        print(f"User found: {user is not None}")
         
         if user and check_password_hash(user['password'], password):
+            print("Password check passed, setting session")
             session.permanent = True
             session['user_id'] = str(user['_id'])
             session['username'] = user['username']
             session['role'] = user['role']
+            print(f"Session set for user: {username}")
             return jsonify({
                 "message": "Login successful",
                 "username": user['username'],
@@ -304,10 +330,14 @@ def login():
                 "name": user.get('name', user['username']),
                 "user_id": str(user['_id'])
             })
+        
+        print("Invalid credentials")
         return jsonify({"error": "Invalid credentials"}), 401
     except Exception as e:
         print(f"Login error: {type(e).__name__}: {e}")
-        return jsonify({"error": "Internal server error"}), 500
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 
 @app.route('/api/auth/forgot', methods=['POST'])
