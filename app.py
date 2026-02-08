@@ -68,17 +68,17 @@ def get_db():
     if mongo_uri:
         try:
             print("Creating new MongoDB connection...")
-            # Add SSL/TLS parameters for Vercel serverless compatibility
+            print(f"Python SSL version: {ssl.OPENSSL_VERSION}")
+            
+            # Simplified connection for MongoDB Atlas with srv
+            # Let pymongo handle SSL automatically
             mongo_client = MongoClient(
                 mongo_uri,
-                serverSelectionTimeoutMS=30000,  # Increased for cold starts
+                serverSelectionTimeoutMS=30000,
                 connectTimeoutMS=30000,
                 socketTimeoutMS=30000,
-                maxPoolSize=1,  # Important for serverless
-                retryWrites=True,
-                tls=True,
-                tlsCAFile=certifi.where(),  # Use certifi certificates
-                tlsAllowInvalidCertificates=False
+                maxPoolSize=1,
+                retryWrites=True
             )
             # Test the connection
             mongo_client.admin.command('ping')
