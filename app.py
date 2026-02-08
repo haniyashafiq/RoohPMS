@@ -12,6 +12,7 @@ import pandas as pd
 import io
 from dotenv import load_dotenv 
 import sys
+import certifi
 
 # Load .env only in development
 load_dotenv()
@@ -76,7 +77,8 @@ def get_db():
                 maxPoolSize=1,  # Important for serverless
                 retryWrites=True,
                 tls=True,
-                tlsAllowInvalidCertificates=True  # Required for Vercel serverless
+                tlsCAFile=certifi.where(),  # Use certifi certificates
+                tlsAllowInvalidCertificates=False
             )
             # Test the connection
             mongo_client.admin.command('ping')
