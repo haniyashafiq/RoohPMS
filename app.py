@@ -29,6 +29,12 @@ app.config["GMAIL_USER"] = os.environ.get("GMAIL_USER")
 app.config["GMAIL_APP_PASSWORD"] = os.environ.get("GMAIL_APP_PASSWORD")
 app.config["PASSWORD_RESET_EXPIRY_MINUTES"] = int(os.environ.get("PASSWORD_RESET_EXPIRY_MINUTES", "30"))
 
+# Session configuration for production/serverless
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("FLASK_ENV") == "production"
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
+
 # MongoDB client setup for serverless - lazy connection
 mongo_client = None
 db = None
@@ -273,22 +279,35 @@ def index():
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
-    if not check_db(): return jsonify({"error": "Database error"}), 500
-    data = clean_input_data(request.json)
-    user = get_db().users.find_one({"username": data['username']})
-    
-    if user and check_password_hash(user['password'], data['password']):
-        session['user_id'] = str(user['_id'])
-        session['username'] = user['username']
-        session['role'] = user['role']
-        return jsonify({
-            "message": "Login successful",
-            "username": user['username'],
-            "role": user['role'],
-            "name": user.get('name', user['username']),
-            "user_id": str(user['_id'])
-        })
-    return jsonify({"error": "Invalid credentials"}), 401
+    try:
+        if not check_db(): 
+            return jsonify({"error": "Database error"}), 500
+        
+        data = clean_input_data(request.json or {})
+        username = data.get('username')
+        password = data.get('password')
+        
+        if not username or not password:
+            return jsonify({"error": "Username and password are required"}), 400
+        
+        user = get_db().users.find_one({"username": username})
+        
+        if user and check_password_hash(user['password'], password):
+            session.permanent = True
+            session['user_id'] = str(user['_id'])
+            session['username'] = user['username']
+            session['role'] = user['role']
+            return jsonify({
+                "message": "Login successful",
+                "username": user['username'],
+                "role": user['role'],
+                "name": user.get('name', user['username']),
+                "user_id": str(user['_id'])
+            })
+        return jsonify({"error": "Invalid credentials"}), 401
+    except Exception as e:
+        print(f"Login error: {type(e).__name__}: {e}")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route('/api/auth/forgot', methods=['POST'])
@@ -2935,6 +2954,8 @@ def ping():
     """Ultra-minimal ping endpoint - even lighter than /health"""
     return '', 200
     
+# Vercel WSGI handler
+app.wsgi_app = app.wsgi_app
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
