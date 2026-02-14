@@ -229,13 +229,12 @@ def role_required(roles):
 def calculate_prorated_fee(monthly_fee, days_elapsed):
     """
     Calculate prorated fee based on days elapsed.
-    If days > 90, calculate as (monthly_fee / 30) * days_elapsed.
-    Otherwise, return the flat monthly_fee.
+    Always calculates as (monthly_fee / 30) * days_elapsed from day 1.
     
     This ensures:
-    - First 90 days: Patient pays fixed monthly fee regardless of exact days
-    - After 90 days: Fee is prorated based on actual days stayed
-    - This prevents overcharging for long-term patients
+    - Accurate per-day billing from the first day
+    - Fair charges based on actual days stayed
+    - Consistent calculation method for all patients
     """
     try:
         # Parse monthly_fee to handle string values with commas
@@ -244,13 +243,9 @@ def calculate_prorated_fee(monthly_fee, days_elapsed):
         else:
             monthly_fee = int(monthly_fee or 0)
         
-        if days_elapsed > 90:
-            # Per-day rate multiplied by actual days elapsed
-            per_day_rate = monthly_fee / 30.0
-            return int(per_day_rate * days_elapsed)
-        else:
-            # Within first 90 days, use flat monthly fee
-            return monthly_fee
+        # Per-day rate multiplied by actual days elapsed (always from day 1)
+        per_day_rate = monthly_fee / 30.0
+        return int(per_day_rate * days_elapsed)
     except (ValueError, TypeError):
         return 0
 
@@ -262,7 +257,7 @@ def calculate_prorated_fee(monthly_fee, days_elapsed):
 # The system tracks patient finances through multiple components:
 #
 # 1. PATIENT CHARGES (Calculated):
-#    - Monthly Fee: Stored per patient, prorated after 90 days
+#    - Monthly Fee: Stored per patient, prorated per-day from day 1
 #    - Canteen Sales: Aggregated from canteen_sales collection
 #    - Laundry: One-time charge added at discharge (if laundryStatus=True)
 #    
@@ -698,14 +693,8 @@ def get_patients():
     try:
         patients_cursor = get_db().patients.find()
         
-        # Aggregate total canteen spending for all patients
+        # Aggregate total canteen spending for all patients (including 'other' adjustments)
         canteen_totals_agg = list(get_db().canteen_sales.aggregate([
-            {'$match': {
-                '$or': [
-                    {'entry_type': {'$exists': False}},
-                    {'entry_type': {'$ne': 'other'}}
-                ]
-            }},
             {'$group': {'_id': '$patient_id', 'total': {'$sum': '$amount'}}}
         ]))
         canteen_totals_map = {str(item['_id']): item['total'] for item in canteen_totals_agg}
@@ -740,7 +729,6 @@ def add_patient():
         data['created_at'] = datetime.now()
         data['notes'] = [] # General Notes (Legacy)
         data['monthlyFee'] = data.get('monthlyFee', '0')
-        data['monthlyAllowance'] = data.get('monthlyAllowance', '3000') # Default allowance
         data['receivedAmount'] = data.get('receivedAmount', '0')  # New field
         data['drug'] = data.get('drug', '')  # New field
         data['photo1'] = data.get('photo1', '')
@@ -774,7 +762,7 @@ def update_patient(id):
         current_role = session.get('role')
         if current_role != 'Admin':
             # Remove sensitive fields for non-admin users
-            sensitive_fields = ['monthlyFee', 'monthlyAllowance', 'laundryStatus', 
+            sensitive_fields = ['monthlyFee', 'laundryStatus', 
                               'laundryAmount', 'cnic', 'contactNo', 'guardianName', 
                               'relation', 'address']
             for field in sensitive_fields:
@@ -908,15 +896,14 @@ def get_canteen_breakdown():
     days_in_month = (next_month - start_of_month).days
     
     try:
-        # 1. Fetch all patients with ID, Name, Allowance AND isDischarged
+        # 1. Fetch all patients with ID, Name AND isDischarged
         patients_cursor = get_db().patients.find({}, {
-            'name': 1, 'monthlyAllowance': 1, 'isDischarged': 1
+            'name': 1, 'isDischarged': 1
         })
         
         patients_map = {
             str(p['_id']): {
                 'name': p['name'], 
-                'allowance': p.get('monthlyAllowance', '0'), 
                 'sales': 0,
                 'isDischarged': p.get('isDischarged', False)
             } 
@@ -939,25 +926,12 @@ def get_canteen_breakdown():
         # Format output
         breakdown_list = []
         for p_id, data in patients_map.items():
-            try:
-                sales = data['sales']
-                monthly_allowance = int(data['allowance'].replace(',', ''))
-                # Calculate daily allowance
-                daily_allowance = monthly_allowance / days_in_month if days_in_month > 0 else 0
-                balance = monthly_allowance - sales
-            except ValueError:
-                sales = data['sales']
-                monthly_allowance = 0
-                daily_allowance = 0
-                balance = -sales
+            sales = data['sales']
                 
             breakdown_list.append({
                 'id': p_id,
                 'name': data['name'],
-                'monthlyAllowance': data['allowance'],
-                'dailyAllowance': round(daily_allowance, 2),
                 'monthlySales': sales,
-                'remainingBalance': balance,
                 'isDischarged': data['isDischarged']
             })
             
@@ -987,7 +961,7 @@ def get_daily_canteen_sheet():
         # Fetch all active patients
         patients_cursor = get_db().patients.find(
             {'isDischarged': {'$ne': True}},
-            {'name': 1, 'monthlyAllowance': 1}
+            {'name': 1}
         ).sort('name', 1)
         
         # Get today's sales for each patient
@@ -1010,7 +984,6 @@ def get_daily_canteen_sheet():
             sheet.append({
                 'id': p_id,
                 'name': p['name'],
-                'dailyAllowance': p.get('monthlyAllowance', '0'),
                 'todayItems': sales_data['items'],
                 'todayTotal': sales_data['total']
             })
@@ -1079,10 +1052,9 @@ def get_canteen_monthly_table():
         
         days_in_month = (end_of_month - start_of_month).days
         
-        # Get all patients with their allowances
+        # Get all patients
         patients_list = list(get_db().patients.find({}, {
             'name': 1,
-            'monthlyAllowance': 1,
             'isDischarged': 1,
             'admissionDate': 1
         }).sort('name', 1))
@@ -1152,35 +1124,21 @@ def get_canteen_monthly_table():
         }))
         other_map = {str(item['patient_id']): item['amount'] for item in other_entries}
         
-        # BATCH QUERY: Get all-time totals for all patients
-        all_time_agg = list(get_db().canteen_sales.aggregate([
-            {'$match': {
-                'patient_id': {'$in': patient_ids},
-                '$or': [
-                    {'entry_type': {'$exists': False}},
-                    {'entry_type': {'$ne': 'other'}}
-                ]
-            }},
-            {'$group': {'_id': '$patient_id', 'total': {'$sum': '$amount'}}}
-        ]))
-        all_time_map = {str(item['_id']): item['total'] for item in all_time_agg}
-        
         patients_data = []
 
         for patient in patients_list:
             patient_id = patient['_id']
             patient_id_str = str(patient_id)
             patient_name = patient.get('name', 'Unknown')
-            monthly_allowance = _safe_int(patient.get('monthlyAllowance', 0))
             is_discharged = patient.get('isDischarged', False)
             
             # Get data from batch queries
             previous_sales_total = previous_sales_map.get(patient_id_str, 0)
             previous_adjustments = previous_adj_map.get(patient_id_str, 0)
             
-            # Old Balance = Sum of total canteen money used in all previous months since admission
-            # This is simply the total of all canteen sales before the current viewing month
-            calculated_balance = previous_sales_total
+            # Old Balance = Sum of ALL canteen spending in previous months (daily + other)
+            # This includes both regular daily canteen sales AND special 'other' adjustments
+            calculated_balance = previous_sales_total + previous_adjustments
             
             # Check if there's a manual override for this patient's old balance
             old_balance = balance_overrides.get(patient_id_str, calculated_balance)
@@ -1203,8 +1161,9 @@ def get_canteen_monthly_table():
             # Calculate Month Total (sum of daily entries + other)
             month_total = sum(daily_entries.values()) + other_amount
             
-            # Get all-time total from batch query
-            total_spent = all_time_map.get(patient_id_str, 0)
+            # Calculate Total (All-Time) using formula: Old Balance + Month Total
+            # This gives the grand total of everything spent since admission
+            total_spent = old_balance + month_total
             
             patients_data.append({
                 'id': str(patient_id),
@@ -1216,8 +1175,7 @@ def get_canteen_monthly_table():
                 'other': other_amount,
                 'monthTotal': month_total,
                 'total': total_spent,
-                'isDischarged': is_discharged,
-                'exceedsBalance': month_total > old_balance
+                'isDischarged': is_discharged
             })
         
         return jsonify({
@@ -1240,9 +1198,9 @@ def save_canteen_old_balance():
     canteen tracking table. It does NOT affect actual patient billing or financial 
     calculations. 
     
-    The Old Balance is a budgeting/tracking feature that shows the allowance 
-    available at the start of the month. Actual billing uses the sum of 
-    canteen_sales entries, not this old balance field.
+    The Old Balance shows the total canteen spending from all previous months. 
+    Admins can manually override this value if needed for adjustments.
+    Actual billing uses the sum of canteen_sales entries.
     """
     if not check_db(): return jsonify({"error": "Database error"}), 500
     
@@ -1291,10 +1249,15 @@ def save_canteen_daily_entry():
         amount = int(data['amount'])
         entry_type = data['entry_type']  # 'daily' or 'other'
         
-        # Check if entry already exists
+        # FIXED: Match by calendar day, not exact timestamp
+        # This prevents issues when entries are created at different times
+        start_of_day = entry_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_of_day = start_of_day + timedelta(days=1)
+        
+        # Check if entry already exists for this calendar day
         existing_entry = get_db().canteen_sales.find_one({
             'patient_id': patient_id,
-            'date': entry_date,
+            'date': {'$gte': start_of_day, '$lt': end_of_day},
             'entry_type': entry_type
         })
         
@@ -1303,23 +1266,37 @@ def save_canteen_daily_entry():
         username = session.get('username', 'Unknown')
         
         if existing_entry:
-            # Entry exists - check if user can edit
-            if user_role == 'Canteen':
-                # Canteen staff cannot edit existing entries
-                return jsonify({"error": "Canteen staff cannot edit existing entries"}), 403
-            elif user_role == 'Admin':
-                # Admin can edit
-                get_db().canteen_sales.update_one(
-                    {'_id': existing_entry['_id']},
-                    {'$set': {
-                        'amount': amount,
-                        'edited_by': username,
-                        'edited_at': datetime.now()
-                    }}
-                )
-                return jsonify({"message": "Entry updated", "id": str(existing_entry['_id'])}), 200
+            # Entry exists - handle update or deletion
+            if amount == 0:
+                # Delete the entry if amount is 0 (user cleared the cell)
+                if user_role == 'Canteen':
+                    return jsonify({"error": "Canteen staff cannot delete existing entries"}), 403
+                elif user_role == 'Admin':
+                    get_db().canteen_sales.delete_one({'_id': existing_entry['_id']})
+                    return jsonify({"message": "Entry deleted", "id": str(existing_entry['_id'])}), 200
+            else:
+                # Update the entry
+                if user_role == 'Canteen':
+                    # Canteen staff cannot edit existing entries
+                    return jsonify({"error": "Canteen staff cannot edit existing entries"}), 403
+                elif user_role == 'Admin':
+                    # Admin can edit
+                    get_db().canteen_sales.update_one(
+                        {'_id': existing_entry['_id']},
+                        {'$set': {
+                            'amount': amount,
+                            'date': entry_date,  # Update to the new time
+                            'edited_by': username,
+                            'edited_at': datetime.now()
+                        }}
+                    )
+                    return jsonify({"message": "Entry updated", "id": str(existing_entry['_id'])}), 200
         else:
             # New entry - both Admin and Canteen can add
+            if amount == 0:
+                # Don't create an entry for 0 amount
+                return jsonify({"message": "No entry created for zero amount"}), 200
+                
             new_entry = {
                 'patient_id': patient_id,
                 'date': entry_date,
@@ -1336,6 +1313,78 @@ def save_canteen_daily_entry():
         return jsonify({"error": f"Invalid data format: {str(ve)}"}), 400
     except Exception as e:
         print(f"Daily Entry Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# --- DEBUG: View all canteen entries for a patient ---
+@app.route('/api/debug/canteen/<patient_id>', methods=['GET'])
+def debug_canteen_entries(patient_id):
+    """Debug endpoint to view all canteen entries for a patient"""
+    if not check_db():
+        return jsonify({"error": "Database error"}), 500
+    try:
+        # Try both string and ObjectId formats
+        from bson import ObjectId
+        entries_str = list(get_db().canteen_sales.find({'patient_id': patient_id}).sort('date', 1))
+        entries_obj = list(get_db().canteen_sales.find({'patient_id': ObjectId(patient_id)}).sort('date', 1))
+        
+        total_str = sum(e.get('amount', 0) for e in entries_str)
+        total_obj = sum(e.get('amount', 0) for e in entries_obj)
+        
+        result_str = []
+        for e in entries_str:
+            result_str.append({
+                'date': e.get('date').isoformat() if e.get('date') else '',
+                'amount': e.get('amount', 0),
+                'entry_type': e.get('entry_type', ''),
+                'item': e.get('item', ''),
+                'recorded_by': e.get('recorded_by', ''),
+            })
+            
+        result_obj = []
+        for e in entries_obj:
+            result_obj.append({
+                'date': e.get('date').isoformat() if e.get('date') else '',
+                'amount': e.get('amount', 0),
+                'entry_type': e.get('entry_type', ''),
+                'item': e.get('item', ''),
+                'recorded_by': e.get('recorded_by', ''),
+            })
+        
+        return jsonify({
+            'as_string': {'entries': result_str, 'total': total_str, 'count': len(result_str)},
+            'as_objectid': {'entries': result_obj, 'total': total_obj, 'count': len(result_obj)}
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# --- DEBUG: Delete all canteen entries for a patient ---
+@app.route('/api/debug/canteen/<patient_id>/delete', methods=['DELETE'])
+def delete_all_canteen_entries(patient_id):
+    """Debug endpoint to delete all canteen entries for a patient"""
+    try:
+        from bson import ObjectId
+        db = get_db()
+        if db is None:
+            print("Database connection failed in delete endpoint")
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        # First check if entries exist
+        count_before = db.canteen_sales.count_documents({'patient_id': ObjectId(patient_id)})
+        print(f"Found {count_before} entries before deletion for patient {patient_id}")
+        
+        # Delete using ObjectId format (since that's how they're stored)
+        result = db.canteen_sales.delete_many({'patient_id': ObjectId(patient_id)})
+        print(f"Deleted {result.deleted_count} entries")
+        
+        return jsonify({
+            'message': f'Deleted {result.deleted_count} canteen entries',
+            'deleted_count': result.deleted_count,
+            'count_before': count_before
+        }), 200
+    except Exception as e:
+        print(f"Delete Error: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 # --- EXPENSES APIs ---
@@ -1534,7 +1583,6 @@ def export_patients():
                 'maritalStatus': p.get('maritalStatus', ''),
                 'prevAdmissions': p.get('prevAdmissions', ''),
                 'monthlyFee': p.get('monthlyFee', '') if is_admin else '',
-                'monthlyAllowance': p.get('monthlyAllowance', '') if is_admin else '',
                 'created_at': p.get('created_at', '')
             }
             export_data.append(row)

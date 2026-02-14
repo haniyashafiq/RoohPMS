@@ -1776,6 +1776,10 @@
           showSuccessModal('Access Denied.', true);
           return;
         }
+        if (viewId === 'canteen-view' && !['Admin', 'Canteen'].includes(currentUser.role)) {
+          showSuccessModal('Access Denied: Canteen view requires Admin or Canteen role.', true);
+          return;
+        }
 
         document.querySelectorAll('.view-section').forEach((el) => el.classList.add('hidden'));
         document.getElementById(viewId).classList.remove('hidden');
@@ -2646,24 +2650,48 @@
           const daysDiff = Math.floor((today - admissionDate) / (1000 * 60 * 60 * 24));
           const daysElapsed = daysDiff >= 0 ? daysDiff : 0;
 
-          // Calculate prorated fee based on days elapsed
+          // Calculate prorated fee based on days elapsed (always per-day from day 1)
           const monthlyFeeRaw = parseInt(String(p.monthlyFee || '0').replace(/,/g, ''), 10) || 0;
-          let feeValue;
-          if (daysElapsed > 90) {
-            // Per-day rate multiplied by actual days elapsed
-            const perDayRate = monthlyFeeRaw / 30.0;
-            feeValue = Math.floor(perDayRate * daysElapsed);
-          } else {
-            // Within first 90 days, use flat monthly fee
-            feeValue = monthlyFeeRaw;
-          }
+          const perDayRate = monthlyFeeRaw / 30.0;
+          const feeValue = Math.floor(perDayRate * daysElapsed);
 
           const fee = formatCurrency(feeValue);
           const receivedValue =
             parseInt(String(p.receivedAmount || '0').replace(/,/g, ''), 10) || 0;
           const receivedAmount = formatCurrency(receivedValue);
+
+          // Get canteen total (all-time spending including 'other' adjustments)
           const canteenSpentValue = p.canteenSpent || 0;
-          const pendingValue = feeValue - receivedValue + canteenSpentValue;
+
+          // Get laundry charges if applicable
+          const laundryValue = p.laundryStatus
+            ? parseInt(String(p.laundryAmount || '0').replace(/,/g, ''), 10) || 0
+            : 0;
+
+          // Calculate Total Bill = Fee + Canteen + Laundry
+          const totalBill = feeValue + canteenSpentValue + laundryValue;
+
+          // Calculate Balance Due = Total Bill - Received
+          const pendingValue = totalBill - receivedValue;
+
+          // Debug logging for patient "ali"
+          if (p.name && p.name.toLowerCase().includes('ali')) {
+            console.log('=== Patient ali Debug ===');
+            console.log('Patient ID:', id);
+            console.log('Name:', p.name);
+            console.log('Monthly Fee Raw:', monthlyFeeRaw);
+            console.log('Days Elapsed:', daysElapsed);
+            console.log('Fee Value (calculated):', feeValue);
+            console.log('Canteen Spent Value:', canteenSpentValue);
+            console.log('Laundry Status:', p.laundryStatus);
+            console.log('Laundry Amount (raw):', p.laundryAmount);
+            console.log('Laundry Value (calculated):', laundryValue);
+            console.log('Received Value:', receivedValue);
+            console.log('Total Bill:', totalBill);
+            console.log('Pending Value:', pendingValue);
+            console.log('Debug URL: /api/debug/canteen/' + id);
+            console.log('========================');
+          }
           const pendingAmount = formatCurrency(pendingValue);
           const areaDisplay = p.area || p.address || '-';
           const drugDisplay = p.drug || '-';
@@ -2851,7 +2879,6 @@
           address: document.getElementById('new-patient-address').value,
           area: document.getElementById('new-patient-area').value || '',
           monthlyFee: document.getElementById('new-patient-fee').value || '0',
-          monthlyAllowance: document.getElementById('new-patient-allowance').value || '3000',
           receivedAmount: document.getElementById('new-patient-received').value || '0',
           drug: document.getElementById('new-patient-drug').value || '',
           photo1: document.getElementById('new-patient-photo1-hidden').value || '',
@@ -3015,7 +3042,6 @@
         setVal('det-drug', p.drug);
         setVal('det-prev', p.prevAdmissions);
         setVal('det-fee', p.monthlyFee);
-        setVal('det-allowance', p.monthlyAllowance);
         setVal('det-received', p.receivedAmount);
         setVal('det-photo1', p.photo1);
         setVal('det-photo2', p.photo2);
@@ -3175,7 +3201,6 @@
         };
         if (currentUser.role === 'Admin') {
           data.monthlyFee = document.getElementById('det-fee').value;
-          data.monthlyAllowance = document.getElementById('det-allowance').value;
           data.receivedAmount = document.getElementById('det-received').value || '0';
           data.drug = document.getElementById('det-drug').value || '';
 
@@ -3263,10 +3288,14 @@
             const fee = Number(String(p.calculatedFee || p.monthlyFee).replace(/,/g, '')) || 0;
             const received = Number(String(p.receivedAmount).replace(/,/g, '')) || 0;
             const canteen = Number(String(p.canteenTotal).replace(/,/g, '')) || 0;
-            const laundry = Number(String(p.laundryAmount).replace(/,/g, '')) || 0;
+            // Only add laundry if laundryStatus is true
+            const laundry = p.laundryStatus
+              ? Number(String(p.laundryAmount).replace(/,/g, '')) || 0
+              : 0;
 
-            // 3. CALCULATE TOTALS (Now guaranteed to be math addition)
+            // 3. CALCULATE TOTALS: Total Bill = Fee + Canteen + Laundry
             const totalBill = fee + canteen + laundry;
+            // Balance Due = Total Bill - Received
             const balanceDue = totalBill - received;
 
             // 4. STYLING
@@ -3508,6 +3537,16 @@
       }
 
       async function renderCanteenBreakdown() {
+        // Check if user has permission to view canteen
+        if (!['Admin', 'Canteen'].includes(currentUser.role)) {
+          console.warn('[CANTEEN] Access denied for role:', currentUser.role);
+          alert(
+            `Access Denied: You need Admin or Canteen role to view this section.\n\nYour current role: ${currentUser.role}`
+          );
+          window.navigateTo('dashboard-view');
+          return;
+        }
+
         // Initialize month/year selectors
         const monthSelect = document.getElementById('canteen-month-select');
         const yearSelect = document.getElementById('canteen-year-select');
@@ -3543,6 +3582,16 @@
           const res = await fetch(`/api/canteen/monthly-table?month=${month}&year=${year}`);
 
           if (!res.ok) {
+            if (res.status === 403) {
+              const errorData = await res.json().catch(() => ({ error: 'Access Denied' }));
+              console.error('[CANTEEN] Access denied:', errorData);
+              alert(
+                `Access Denied: ${errorData.error}\n\nYou need Admin or Canteen role to view this section.\n\nYour current role: ${currentUser.role}`
+              );
+              // Navigate back to dashboard
+              window.navigateTo('dashboard-view');
+              return;
+            }
             const errorText = await res.text();
             console.error('[CANTEEN] API error response:', errorText);
             throw new Error(`API returned ${res.status}: ${errorText}`);
@@ -3601,98 +3650,117 @@
             const row = document.createElement('tr');
             row.className = patient.isDischarged ? 'bg-gray-50 opacity-60' : 'hover:bg-gray-50';
 
-            // Name cell with red background if month total exceeds old balance
-            const nameClass = patient.exceedsBalance
-              ? 'bg-red-500 text-white font-bold'
-              : 'bg-white';
-            const dischargedBadge = patient.isDischarged
-              ? '<span class="ml-2 text-[9px] uppercase font-bold bg-gray-300 text-gray-600 px-1.5 py-0.5 rounded">Discharged</span>'
-              : '';
+            // Name cell - always white background
+            const nameCell = document.createElement('td');
+            nameCell.className = 'px-4 py-3 whitespace-nowrap sticky left-0 bg-white z-10 border-r';
+            nameCell.textContent = patient.name + ' ';
+
+            if (patient.isDischarged) {
+              const badge = document.createElement('span');
+              badge.className =
+                'ml-2 text-[9px] uppercase font-bold bg-gray-300 text-gray-600 px-1.5 py-0.5 rounded';
+              badge.textContent = 'Discharged';
+              nameCell.appendChild(badge);
+            }
+            row.appendChild(nameCell);
 
             // Old Balance cell - editable for admin, show indicator if manually overridden
-            const isAdmin = currentUser.role === 'Admin';
-            const oldBalanceEditable = isAdmin ? 'contenteditable="true"' : '';
-            const oldBalanceClass = isAdmin ? 'editable-cell cursor-text hover:bg-blue-50' : '';
-            const overrideIndicator = patient.hasManualOverride
-              ? '<i class="fas fa-edit text-blue-500 text-xs ml-1" title="Manually edited"></i>'
-              : '';
+            const oldBalanceCell = document.createElement('td');
+            oldBalanceCell.className = 'px-4 py-3 text-center font-semibold text-gray-700';
+            if (isAdmin) {
+              oldBalanceCell.className += ' editable-cell cursor-text hover:bg-blue-50';
+              oldBalanceCell.contentEditable = 'true';
+              oldBalanceCell.addEventListener('blur', () =>
+                saveCanteenOldBalance(oldBalanceCell, month, year)
+              );
+              oldBalanceCell.addEventListener('keydown', handleCellKeydown);
+            }
+            oldBalanceCell.dataset.patientId = patient.id;
+            oldBalanceCell.dataset.entryType = 'old-balance';
+            oldBalanceCell.dataset.original = patient.oldBalance;
+            oldBalanceCell.dataset.month = month;
+            oldBalanceCell.dataset.year = year;
+            oldBalanceCell.title = patient.hasManualOverride
+              ? 'Manual override (calculated: ' + formatCurrency(patient.calculatedBalance) + ')'
+              : 'Auto-calculated';
+            oldBalanceCell.textContent = formatCurrency(patient.oldBalance);
 
-            row.innerHTML = `
-              <td class="px-4 py-3 whitespace-nowrap sticky left-0 ${nameClass} z-10 border-r">
-                ${patient.name} ${dischargedBadge}
-              </td>
-              <td class="px-4 py-3 text-center font-semibold text-gray-700 ${oldBalanceClass}" 
-                  ${oldBalanceEditable}
-                  data-patient-id="${patient.id}"
-                  data-entry-type="old-balance"
-                  data-original="${patient.oldBalance}"
-                  onblur="saveCanteenOldBalance(this, ${month}, ${year})"
-                  onkeydown="handleCellKeydown(event)"
-                  title="${patient.hasManualOverride ? 'Manual override (calculated: ' + formatCurrency(patient.calculatedBalance) + ')' : 'Auto-calculated'}">
-                ${formatCurrency(patient.oldBalance)}${overrideIndicator}
-              </td>
-            `;
+            if (patient.hasManualOverride) {
+              const icon = document.createElement('i');
+              icon.className = 'fas fa-edit text-blue-500 text-xs ml-1';
+              icon.title = 'Manually edited';
+              oldBalanceCell.appendChild(icon);
+            }
+            row.appendChild(oldBalanceCell);
 
-            // Add day cells (editable)
+            // Add day cells (editable) - using DOM creation instead of innerHTML
             for (let day = 1; day <= data.daysInMonth; day++) {
               const amount = patient.dailyEntries[day] || '';
               const displayValue = amount ? formatCurrency(amount) : '';
 
               // Determine if cell is editable
               const isEditable = isAdmin || (isCanteen && !amount);
-              const editableAttr = isEditable ? 'contenteditable="true"' : '';
-              const cellClass = isEditable
-                ? 'editable-cell cursor-text hover:bg-blue-50'
-                : 'bg-gray-100';
 
-              row.innerHTML += `
-                <td class="px-2 py-2 text-center text-sm ${cellClass}" 
-                    ${editableAttr}
-                    data-patient-id="${patient.id}"
-                    data-day="${day}"
-                    data-entry-type="daily"
-                    data-original="${amount}"
-                    onblur="saveCanteenEntry(this, ${month}, ${year})"
-                    onkeydown="handleCellKeydown(event)">
-                  ${displayValue}
-                </td>
-              `;
+              const dayCell = document.createElement('td');
+              dayCell.className = 'px-2 py-2 text-center text-sm';
+              dayCell.className += isEditable
+                ? ' editable-cell cursor-text hover:bg-blue-50'
+                : ' bg-gray-100';
+
+              if (isEditable) {
+                dayCell.contentEditable = 'true';
+                dayCell.addEventListener('blur', () => saveCanteenEntry(dayCell, month, year));
+                dayCell.addEventListener('keydown', handleCellKeydown);
+              }
+
+              dayCell.dataset.patientId = patient.id;
+              dayCell.dataset.day = day;
+              dayCell.dataset.entryType = 'daily';
+              dayCell.dataset.original = amount;
+              dayCell.dataset.month = month;
+              dayCell.dataset.year = year;
+              dayCell.textContent = displayValue;
+
+              row.appendChild(dayCell);
             }
 
             // Other column (editable)
             const otherAmount = patient.other || '';
             const otherDisplay = otherAmount ? formatCurrency(otherAmount) : '';
             const otherEditable = isAdmin || (isCanteen && !otherAmount);
-            const otherEditableAttr = otherEditable ? 'contenteditable="true"' : '';
-            const otherCellClass = otherEditable
-              ? 'editable-cell cursor-text hover:bg-blue-50'
-              : 'bg-gray-100';
 
-            row.innerHTML += `
-              <td class="px-3 py-2 text-center text-sm font-medium ${otherCellClass}" 
-                  ${otherEditableAttr}
-                  data-patient-id="${patient.id}"
-                  data-entry-type="other"
-                  data-original="${otherAmount}"
-                  onblur="saveCanteenEntry(this, ${month}, ${year})"
-                  onkeydown="handleCellKeydown(event)">
-                ${otherDisplay}
-              </td>
-            `;
+            const otherCell = document.createElement('td');
+            otherCell.className = 'px-3 py-2 text-center text-sm font-medium';
+            otherCell.className += otherEditable
+              ? ' editable-cell cursor-text hover:bg-blue-50'
+              : ' bg-gray-100';
+
+            if (otherEditable) {
+              otherCell.contentEditable = 'true';
+              otherCell.addEventListener('blur', () => saveCanteenEntry(otherCell, month, year));
+              otherCell.addEventListener('keydown', handleCellKeydown);
+            }
+
+            otherCell.dataset.patientId = patient.id;
+            otherCell.dataset.entryType = 'other';
+            otherCell.dataset.original = otherAmount;
+            otherCell.dataset.month = month;
+            otherCell.dataset.year = year;
+            otherCell.textContent = otherDisplay;
+
+            row.appendChild(otherCell);
 
             // Month Total (calculated, not editable)
-            row.innerHTML += `
-              <td class="px-4 py-3 text-center font-bold text-gray-900 bg-[#fffbf0]">
-                ${formatCurrency(patient.monthTotal)}
-              </td>
-            `;
+            const monthTotalCell = document.createElement('td');
+            monthTotalCell.className = 'px-4 py-3 text-center font-bold text-gray-900 bg-[#fffbf0]';
+            monthTotalCell.textContent = formatCurrency(patient.monthTotal);
+            row.appendChild(monthTotalCell);
 
             // Total (all-time, not editable)
-            row.innerHTML += `
-              <td class="px-4 py-3 text-center font-bold text-gray-900 bg-[#fffbf0]">
-                ${formatCurrency(patient.total)}
-              </td>
-            `;
+            const totalCell = document.createElement('td');
+            totalCell.className = 'px-4 py-3 text-center font-bold text-gray-900 bg-[#fffbf0]';
+            totalCell.textContent = formatCurrency(patient.total);
+            row.appendChild(totalCell);
 
             tableBody.appendChild(row);
           });
@@ -3728,8 +3796,19 @@
       };
 
       window.saveCanteenOldBalance = async function saveCanteenOldBalance(cell, month, year) {
+        // Guard flag to prevent duplicate saves from blur events
+        if (cell.dataset.saving === 'true') {
+          console.log('Already saving old balance, skipping...');
+          return;
+        }
+        cell.dataset.saving = 'true';
+
         const patientId = cell.dataset.patientId;
         const originalValue = cell.dataset.original || '';
+
+        // Get month/year from cell's data attributes (more reliable than parameters)
+        const cellMonth = parseInt(cell.dataset.month);
+        const cellYear = parseInt(cell.dataset.year);
 
         // Get the new value (remove currency formatting)
         let newValue = cell.textContent.trim().replace(/[^\d]/g, '');
@@ -3742,6 +3821,7 @@
         // If unchanged, skip save
         if (newValue === originalValue) {
           cell.textContent = formatCurrency(parseInt(newValue));
+          cell.dataset.saving = 'false';
           return;
         }
 
@@ -3751,8 +3831,8 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               patient_id: patientId,
-              month: month,
-              year: year,
+              month: cellMonth,
+              year: cellYear,
               old_balance: parseInt(newValue),
             }),
           });
@@ -3764,8 +3844,10 @@
 
             // Add indicator icon if not already present
             if (!cell.querySelector('.fa-edit')) {
-              cell.innerHTML +=
-                '<i class="fas fa-edit text-blue-500 text-xs ml-1" title="Manually edited"></i>';
+              const icon = document.createElement('i');
+              icon.className = 'fas fa-edit text-blue-500 text-xs ml-1';
+              icon.title = 'Manually edited';
+              cell.appendChild(icon);
             }
 
             // Reload the table to recalculate exceeds balance logic
@@ -3779,13 +3861,27 @@
           console.error('Save old balance error:', e);
           alert('Error saving old balance');
           cell.textContent = formatCurrency(parseInt(originalValue));
+        } finally {
+          // Reset guard flag to allow future saves
+          cell.dataset.saving = 'false';
         }
       };
 
       window.saveCanteenEntry = async function saveCanteenEntry(cell, month, year) {
+        // Guard flag to prevent duplicate saves from blur events
+        if (cell.dataset.saving === 'true') {
+          console.log('Already saving, skipping...');
+          return;
+        }
+        cell.dataset.saving = 'true';
+
         const patientId = cell.dataset.patientId;
         const entryType = cell.dataset.entryType;
         const originalValue = cell.dataset.original || '';
+
+        // Get month/year from cell's data attributes (more reliable than parameters)
+        const cellMonth = parseInt(cell.dataset.month);
+        const cellYear = parseInt(cell.dataset.year);
 
         // Get the new value (remove currency formatting)
         let newValue = cell.textContent.trim().replace(/[^\d]/g, '');
@@ -3801,17 +3897,19 @@
         // If value hasn't changed, do nothing
         if (newAmount === originalAmount) {
           cell.textContent = originalAmount ? formatCurrency(originalAmount) : '';
+          cell.dataset.saving = 'false';
           return;
         }
 
-        // Build the date
+        // Build the date - FIXED: Use noon (12:00) to prevent timezone conversion issues
         let entryDate;
         if (entryType === 'daily') {
           const day = parseInt(cell.dataset.day);
-          entryDate = new Date(year, month - 1, day);
+          // Use noon instead of midnight to prevent timezone shift to previous day
+          entryDate = new Date(cellYear, cellMonth - 1, day, 12, 0, 0);
         } else {
-          // For "other" column, use first day of month
-          entryDate = new Date(year, month - 1, 1);
+          // For "other" column, use first day of month at noon
+          entryDate = new Date(cellYear, cellMonth - 1, 1, 12, 0, 0);
         }
 
         try {
@@ -3850,6 +3948,9 @@
           alert('Failed to save entry');
           // Revert to original value
           cell.textContent = originalAmount ? formatCurrency(originalAmount) : '';
+        } finally {
+          // Reset guard flag to allow future saves
+          cell.dataset.saving = 'false';
         }
       };
 
@@ -7353,7 +7454,7 @@
                   id="header-fee"
                   class="px-2 py-2 text-left whitespace-nowrap font-semibold text-xs admin-only-column"
                 >
-                  Fee
+                  Calculated Fee
                 </th>
                 <th class="px-2 py-2 text-center whitespace-nowrap font-semibold text-xs">
                   Days Done
@@ -7498,11 +7599,6 @@
                       id="det-fee"
                       class="financial-input border p-2 rounded"
                       placeholder="Monthly Fee"
-                    />
-                    <input
-                      id="det-allowance"
-                      class="financial-input border p-2 rounded"
-                      placeholder="Canteen Allowance"
                     />
                     <input
                       id="det-received"
@@ -8755,19 +8851,6 @@
                 placeholder="Enter complete address"
                 rows="2"
               ></textarea>
-            </div>
-
-            <div>
-              <label class="block text-sm font-semibold text-gray-700 mb-1"
-                >Monthly Allowance</label
-              >
-              <input
-                type="number"
-                id="new-patient-allowance"
-                class="w-full border border-gray-300 p-2 rounded focus:ring-2 focus:ring-[#c9a749] focus:border-transparent"
-                placeholder="3000"
-                value="3000"
-              />
             </div>
 
             <div>
